@@ -1,0 +1,11 @@
+{
+  "name": "Maker Soal",
+  "short_name": "Maker Soal",
+  "description": "Ringkasan, soal, flashcard, dan tanya jawab dari materi kamu sendiri.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f5f3ec",
+  "theme_color": "#1f6f5c",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
