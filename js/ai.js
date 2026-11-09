@@ -256,7 +256,7 @@ ${SOAL_RULES}`),
       });
     },
 
-    async quiz(doc, { jumlah, tingkat, jenis, fokus }, onStatus) {
+    async quiz(doc, { jumlah, tingkat, jenis, fokus, hindari = [] }, onStatus) {
       const nama = { pilihan_ganda: "pilihan ganda (4 opsi)", isian: "isian singkat", esai: "esai/uraian" };
       return call({
         onStatus, system: RULES, temperature: 0.4,
@@ -264,7 +264,10 @@ ${SOAL_RULES}`),
 ${fokus ? `Fokus: ${fokus}\n` : ""}Ketentuan:
 - Sebar soal ke seluruh bagian MATERI, jangan menumpuk di satu bagian.
 - Tingkat "mudah": mengingat fakta. "sedang": memahami & menerapkan. "sulit": menganalisis, membandingkan, menyimpulkan — tetap berdasarkan materi.
-${SOAL_RULES}`),
+${SOAL_RULES}${hindari.length ? `
+- WAJIB BARU: pelajar sudah pernah mengerjakan soal-soal di bawah. JANGAN membuat soal yang sama, mirip, atau sekadar diparafrasekan. Tanyakan fakta/konsep LAIN dari materi, atau sudut pandang berbeda (penerapan, perbandingan, sebab-akibat). Jika materi terbatas, boleh konsep sama tetapi dengan bentuk pertanyaan yang benar-benar berbeda.
+SOAL YANG SUDAH PERNAH KELUAR:
+${hindari.map((h) => "- " + h.slice(0, 160)).join("\n")}` : ""}`),
         schema: obj({ soal: arr(SOAL) }),
       });
     },

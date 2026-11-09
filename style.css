@@ -217,6 +217,9 @@ details > summary { cursor: pointer; font-weight: 600; min-height: 32px; }
 .fb-list { margin: 0 0 12px; padding-left: 1.2em; }
 .fb-list li { margin: .4em 0; }
 
+.stack-sm > * + * { margin-top: 8px; }
+.finish { border-color: var(--accent); }
+
 /* ---------- Belajar bertahap ---------- */
 .topic-row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; cursor: pointer; }
 .topic-row + .topic-row { border-top: 1px solid var(--line); }

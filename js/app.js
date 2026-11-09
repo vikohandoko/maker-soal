@@ -428,8 +428,8 @@ function renderTopic(t) {
     ${p.soal.map((s, k) => renderQ(s, k, "topic")).join("")}
     <div class="card spread">
       <span>${sc.answered}/${sc.total} dijawab · benar ${sc.correct}</span>
-      <div class="row"><button class="btn sm" data-act="topicRetry">Ulangi</button>
-      <button class="btn sm" data-act="topicNewQuiz">Soal baru</button></div>
+      <div class="row"><button class="btn sm" data-act="topicRetry">Acak &amp; ulangi</button>
+      <button class="btn sm" data-act="topicNewQuiz">Soal baru (AI)</button></div>
     </div>
 
     <section class="card"><h3 class="step"><span>4</span> Jelaskan ulang</h3>
@@ -463,7 +463,7 @@ async function startTopic(t) {
 async function newTopicQuiz(t) {
   await run("Membuat soal baru untuk topik ini…", async (status) => {
     const sub = pagesFor(state.doc, t.lokasi);
-    const r = await AI.quiz(sub, { jumlah: 4, tingkat: "sedang", jenis: ["pilihan_ganda", "isian"], fokus: `hanya tentang topik "${t.judul}"` }, status);
+    const r = await AI.quiz(sub, { jumlah: 4, tingkat: "sedang", jenis: ["pilihan_ganda", "isian"], fokus: `hanya tentang topik "${t.judul}"`, hindari: hindariList(t.paket.soal) }, status);
     const { soal } = await processSoal(sub, r.soal, status, AI.settings.verify);
     t.paket.soal = soal;
     state.tAnswers = {};
@@ -557,9 +557,10 @@ async function processSoal(src, raw, status, verify) {
 
 async function makeQuiz(src, opts, label, busyText = "Membuat soal…") {
   await run(busyText, async (status) => {
-    const r = await AI.quiz(src, opts, status);
+    const r = await AI.quiz(src, { ...opts, hindari: hindariList() }, status);
     const { soal, info } = await processSoal(src, r.soal, status, opts.periksa);
-    const quiz = { id: uid(), createdAt: Date.now(), opts, soal, info, label };
+    // Simpan halaman sumber agar "Soal baru" berikutnya tetap dari cakupan yang sama
+    const quiz = { id: uid(), createdAt: Date.now(), opts, soal, info, label, sumber: src.pages.map((p) => p.label) };
     state.doc.quizzes.unshift(quiz);
     state.quizId = quiz.id; state.answers = {}; state.revealAll = false; state.local = null;
     await save();
@@ -632,12 +633,13 @@ function tabQuiz() {
       <p class="small muted" style="margin-top:8px">${inf.lokal ? "Disusun ulang dari soal tersimpan, tanpa AI." : `${inf.dibuat} soal dibuat${inf.formatRusak ? `, ${inf.formatRusak} dibuang karena formatnya rusak` : ""}${inf.diperiksa ?? quiz.opts.periksa ? `. Pemeriksa: ${inf.diperbaiki} diperbaiki, ${inf.dibuang} dibuang` : ""}.`}</p>
       <div class="row">
         <button class="btn sm" data-act="revealAll">${state.revealAll ? "Sembunyikan kunci" : "Tampilkan semua kunci"}</button>
-        <button class="btn sm" data-act="quizReset">Ulangi</button>
+        <button class="btn sm" data-act="quizReset">Acak &amp; ulangi</button>
         <button class="btn sm" data-act="print">Cetak / PDF</button>
         <button class="btn sm danger" data-act="quizDel">Hapus set</button>
       </div>
     </div>
     ${quiz.soal.map((s, i) => renderQ(s, i, "quiz")).join("")}
+    ${sc.total && sc.answered === sc.total ? finishCard(sc) : ""}
     <div class="scorebar"><span>${sc.answered}/${sc.total} dijawab</span><b>Benar ${sc.correct}</b></div>`;
 }
 
@@ -702,25 +704,55 @@ function allSoal(doc) {
   }
   return out;
 }
-async function localShuffle() {
-  const pool = allSoal(state.doc);
-  if (pool.length < 3) return toast("Belum cukup soal tersimpan. Buat soal atau pelajari beberapa topik dulu.", "err");
-  const soal = shuffle(pool).slice(0, 15).map((s) => {
+// Acak urutan soal DAN urutan pilihan A–D (kunci jawaban ikut disesuaikan)
+function shuffleSoal(list) {
+  let out = shuffle(list).map((s) => {
     const c = JSON.parse(JSON.stringify(s));
-    delete c.catatan;
     if (c.jenis === "pilihan_ganda") {
       const right = c.opsi["ABCD".indexOf(c.jawaban)];
-      c.opsi = shuffle(c.opsi);
+      let opsi = shuffle(c.opsi);
+      if (opsi.indexOf(right) === c.opsi.indexOf(right)) opsi = shuffle(c.opsi); // usahakan posisi kunci berpindah
+      c.opsi = opsi;
       c.jawaban = "ABCD"[c.opsi.indexOf(right)];
     }
     return c;
   });
-  const quiz = { id: uid(), createdAt: Date.now(), soal, label: "Acak ulang (tanpa AI)", opts: { jumlah: soal.length, tingkat: "campuran", jenis: [], periksa: false }, info: { lokal: true, dibuat: soal.length } };
+  // usahakan soal pertama tidak sama dengan sebelumnya
+  if (out.length > 1 && out[0].pertanyaan === list[0].pertanyaan) out.push(out.shift());
+  return out;
+}
+const curQuiz = () => state.doc.quizzes.find((q) => q.id === state.quizId) || state.doc.quizzes[0];
+async function addLocalQuiz(soal, label, msg) {
+  soal.forEach((s) => delete s.catatan);
+  const quiz = { id: uid(), createdAt: Date.now(), soal, label, opts: { jumlah: soal.length, tingkat: "campuran", jenis: [...new Set(soal.map((s) => s.jenis))], periksa: false }, info: { lokal: true, dibuat: soal.length } };
   state.doc.quizzes.unshift(quiz);
   state.quizId = quiz.id; state.answers = {}; state.revealAll = false; state.local = null;
   await save();
-  renderDoc();
-  toast(`${soal.length} soal diacak ulang tanpa memakai kuota.`);
+  state.tab = "soal";
+  render();
+  toast(msg);
+}
+async function localShuffle() {
+  const pool = allSoal(state.doc);
+  if (pool.length < 3) return toast("Belum cukup soal tersimpan. Buat soal atau pelajari beberapa topik dulu.", "err");
+  addLocalQuiz(shuffleSoal(pool).slice(0, 15), "Acak ulang (tanpa AI)", "Soal diacak ulang tanpa memakai kuota.");
+}
+// Soal yang belum pernah keluar: daftar pertanyaan lama dikirim ke AI agar tidak diulang
+const hindariList = (extra = []) => [...extra.map((s) => s.pertanyaan), ...allSoal(state.doc).map((s) => s.pertanyaan)].slice(0, 80);
+
+function finishCard(sc) {
+  const pct = Math.round((sc.correct / sc.total) * 100);
+  const wrong = sc.total - sc.correct;
+  return `<section class="card finish">
+    <h2>Selesai! Skor ${pct}</h2>
+    <p class="small muted">${sc.correct} dari ${sc.total} benar. Pilih latihan berikutnya:</p>
+    <div class="stack-sm">
+      <button class="btn primary block" data-act="quizFresh">Soal baru dengan AI (belum pernah keluar)</button>
+      ${wrong ? `<button class="btn block" data-act="quizWrong">Latih ulang ${wrong} soal yang salah</button>` : ""}
+      <button class="btn block" data-act="quizReset">Acak urutan &amp; pilihan, kerjakan lagi</button>
+    </div>
+    <p class="small muted" style="margin:10px 0 0">Soal baru memakai ±${AI.settings.verify ? 2 : 1} panggilan AI. Dua tombol lainnya tidak memakai kuota.</p>
+  </section>`;
 }
 function pairsPool(doc) {
   const out = (doc.summary?.istilah || []).filter((t) => t.cek?.status !== "tidak").map((t) => ({ a: t.istilah, b: t.arti }));
@@ -1143,7 +1175,13 @@ const actions = {
   topicOpen: (el) => { state.topicId = el.dataset.id; state.tAnswers = {}; state.tab = "belajar"; render(); },
   topicBack: () => { state.topicId = null; render(); },
   topicStart: () => startTopic(curTopic()),
-  topicRetry: () => { state.tAnswers = {}; keepScroll(renderDoc); },
+  topicRetry: async () => {
+    const t = curTopic();
+    t.paket.soal = shuffleSoal(t.paket.soal);
+    state.tAnswers = {};
+    await save(); renderDoc();
+    document.querySelector(".q")?.scrollIntoView({ block: "start" });
+  },
   topicNewQuiz: () => newTopicQuiz(curTopic()),
   topicFeynman: () => { state.feyPrefill = curTopic().judul; state.tab = "feynman"; render(); },
   reviewTopic: () => startReview(state.doc.id, state.topicId),
@@ -1169,7 +1207,29 @@ const actions = {
   reveal: (el) => { answerSet(el)[el.dataset.i] = "shown"; keepScroll(renderDoc); },
   selfMark: (el) => { answerSet(el)[el.dataset.i] = el.dataset.v; afterAnswer(el); },
   revealAll: () => { state.revealAll = !state.revealAll; keepScroll(renderDoc); },
-  quizReset: () => { state.answers = {}; state.revealAll = false; renderDoc(); },
+  quizReset: async () => {
+    const q = curQuiz();
+    q.soal = shuffleSoal(q.soal);
+    state.answers = {}; state.revealAll = false;
+    await save(); render();
+    toast("Urutan soal dan pilihan jawaban sudah diacak.");
+  },
+  quizWrong: () => {
+    const q = curQuiz();
+    const wrong = q.soal.filter((s, i) => { const a = state.answers[i]; return s.jenis === "pilihan_ganda" ? a && a !== s.jawaban : a === "bad"; });
+    addLocalQuiz(shuffleSoal(wrong), "Soal yang salah (tanpa AI)", `${wrong.length} soal yang salah siap dilatih ulang.`);
+  },
+  quizFresh: () => {
+    const q = curQuiz(), o = q.opts, d = state.doc;
+    const set = new Set(q.sumber || []);
+    const base = set.size ? d.pages.filter((p) => set.has(p.label)) : d.pages;
+    makeQuiz({ pages: samplePages(base.length ? base : d.pages, CHUNK_CHARS, usedLabels(d)) }, {
+      jumlah: Math.max(5, Math.min(30, q.info?.lokal ? 10 : q.soal.length)),
+      tingkat: o.tingkat === "campuran" ? "sedang" : o.tingkat,
+      jenis: o.jenis?.length ? o.jenis : ["pilihan_ganda", "isian"],
+      periksa: AI.settings.verify, fokus: o.fokus,
+    }, q.info?.lokal ? "Soal baru" : q.label || "Soal baru", "Membuat soal baru yang belum pernah keluar…");
+  },
   quizDel: async () => {
     if (!confirm("Hapus set soal ini?")) return;
     state.doc.quizzes = state.doc.quizzes.filter((q) => q.id !== (state.quizId || state.doc.quizzes[0]?.id));
