@@ -85,10 +85,83 @@ function usageHtml() {
 }
 
 // ---------- Data materi ----------
+// Halaman untuk satu topik/daftar label — dibatasi agar muat dalam satu panggilan AI
 function pagesFor(doc, labels) {
   const set = new Set(labels || []);
   const pages = doc.pages.filter((p) => set.has(p.label));
-  return { pages: pages.length ? pages : doc.pages };
+  return { pages: samplePages(pages.length ? pages : doc.pages, CHUNK_CHARS, usedLabels(doc)) };
+}
+const isLong = (doc) => docChars(doc.pages) > CHUNK_CHARS;
+const nTopics = (chars, long) => Math.max(3, Math.min(15, Math.round(chars / (long ? 12000 : 4000))));
+function rangeText(pages) {
+  return pages.length === 1 ? pages[0].label : `${pages[0].label} – ${pages[pages.length - 1].label}`;
+}
+// Jalankan tugas AI per bagian untuk materi panjang
+async function perChunk(doc, status, what, fn) {
+  const chunks = chunkPages(doc.pages);
+  const out = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const part = { i: i + 1, n: chunks.length, range: rangeText(chunks[i]) };
+    status(`${what} — bagian ${i + 1} dari ${chunks.length} (${part.range})…`);
+    out.push({ ...(await fn({ pages: chunks[i] }, part)), range: part.range });
+  }
+  return out;
+}
+function mergeIstilah(lists) {
+  const seen = new Set();
+  return lists.flat().filter((t) => t?.istilah && !seen.has(t.istilah.toLowerCase()) && seen.add(t.istilah.toLowerCase())).slice(0, 40);
+}
+// Ringkasan + istilah + peta topik (1 panggilan, atau per bagian + 1 penggabungan untuk modul panjang)
+async function buildSetup(doc, status) {
+  if (!isLong(doc)) return AI.setup(doc, nTopics(docChars(doc.pages)), status);
+  const parts = await perChunk(doc, status, "Membaca modul", (sub, part) => AI.setup(sub, nTopics(docChars(sub.pages), true), status, part));
+  status("Menggabungkan ringkasan semua bagian…");
+  const m = await AI.mergeSummary(parts, "sedang", status);
+  return { judul: m.judul, ringkasan: m.ringkasan, istilah: mergeIstilah(parts.map((p) => p.istilah)), topik: parts.flatMap((p) => p.topik || []) };
+}
+async function buildSummary(doc, detail, status) {
+  if (!isLong(doc)) return AI.summary(doc, detail, status);
+  const parts = await perChunk(doc, status, "Meringkas", (sub, part) => AI.summary(sub, detail, status, part));
+  status("Menggabungkan ringkasan semua bagian…");
+  const m = await AI.mergeSummary(parts, detail, status);
+  return { judul: m.judul, ringkasan: m.ringkasan, istilah: mergeIstilah(parts.map((p) => p.istilah)) };
+}
+async function buildTopics(doc, status) {
+  if (!isLong(doc)) return (await AI.topicMap(doc, nTopics(docChars(doc.pages)), status)).topik;
+  const parts = await perChunk(doc, status, "Membuat peta materi", (sub, part) => AI.topicMap(sub, nTopics(docChars(sub.pages), true), status, part));
+  return parts.flatMap((p) => p.topik || []);
+}
+const setupCalls = (doc) => (isLong(doc) ? chunkPages(doc.pages).length + 1 : 1);
+
+// Pilihan sumber soal/kartu: seluruh materi, satu topik, atau rentang halaman
+function scopeSelect(id) {
+  const d = state.doc;
+  return `<label class="field"><span>Sumber</span><select id="${id}" data-scope>
+      <option value="all">Seluruh materi${isLong(d) ? " (dipilih otomatis, utamakan yang belum tercakup)" : ""}</option>
+      ${d.topik.map((t, i) => `<option value="t:${t.id}">Topik ${i + 1}: ${esc(t.judul)}</option>`).join("")}
+      <option value="range">Rentang halaman/bagian…</option>
+    </select></label>
+    <div class="grid2" id="${id}Range" hidden>
+      <label class="field"><span>Dari nomor</span><input type="number" id="${id}Dari" min="1" max="${d.pages.length}" value="1"></label>
+      <label class="field"><span>Sampai nomor</span><input type="number" id="${id}Sampai" min="1" max="${d.pages.length}" value="${Math.min(d.pages.length, 20)}"></label>
+    </div>`;
+}
+function scopeFor(id) {
+  const d = state.doc, v = document.getElementById(id)?.value || "all";
+  if (v.startsWith("t:")) {
+    const t = d.topik.find((x) => "t:" + x.id === v);
+    return { src: pagesFor(d, t.lokasi), label: `Topik: ${t.judul}`, fokus: `hanya tentang topik "${t.judul}"` };
+  }
+  let pages = d.pages, label = null;
+  if (v === "range") {
+    const a = Math.max(1, parseInt(document.getElementById(id + "Dari").value) || 1);
+    const b = Math.min(d.pages.length, Math.max(a, parseInt(document.getElementById(id + "Sampai").value) || a));
+    pages = d.pages.slice(a - 1, b);
+    label = rangeText(pages);
+  }
+  const picked = samplePages(pages, CHUNK_CHARS, usedLabels(d));
+  if (picked.length < pages.length) toast(`Materi panjang: kali ini diambil ${picked.length} dari ${pages.length} bagian (diutamakan yang belum tercakup). Ulangi untuk bagian lainnya.`);
+  return { src: { pages: picked }, label: label || (picked.length < pages.length ? `${picked.length} bagian terpilih` : null) };
 }
 function sanitizeTopics(doc, list) {
   const labels = doc.pages.map((p) => p.label);
@@ -209,8 +282,8 @@ async function handleFiles(files) {
     await DB.put(doc);
     state.doc = doc;
     try {
-      status("Membuat ringkasan dan peta materi…");
-      const s = await AI.setup(doc, status);
+      status(isLong(doc) ? `Modul panjang (${doc.pages.length} bagian) — diproses dalam ${setupCalls(doc)} panggilan AI…` : "Membuat ringkasan dan peta materi…");
+      const s = await buildSetup(doc, status);
       applySummary(doc, s, "sedang");
       doc.topik = sanitizeTopics(doc, s.topik);
       await save();
@@ -244,7 +317,7 @@ function renderDoc() {
     </div>
     <h1>${esc(d.summary?.judul || d.name)}</h1>
     <p class="small muted">${esc(d.name)} · ${d.pages.length} bagian · dibaca dengan ${d.method === "ocr" ? "OCR AI (hasil scan/foto)" : "ekstraksi teks"}</p>
-    ${d.truncated ? `<div class="card notice small">File sangat panjang: hanya ${d.pages.length} dari ${d.totalPages} bagian pertama yang dipakai. Untuk hasil lengkap, pecah file menjadi beberapa bagian.</div>` : ""}
+    ${d.truncated ? `<div class="card notice small">File ini terpotong: hanya ${d.pages.length} dari ${d.totalPages} bagian yang tersimpan. Versi aplikasi sekarang sudah bisa membaca modul panjang — hapus materi ini lalu unggah ulang filenya agar semua halaman terbaca.</div>` : ""}
     ${d.method === "ocr" ? `<p class="small muted">Tips: hasil OCR bisa keliru membaca tulisan. Cek lewat "Teks hasil baca file".</p>` : ""}
     <nav class="tabs" role="tablist">${TABS.map(([k, l]) => `<button class="tab" role="tab" aria-selected="${state.tab === k}" data-act="tab" data-tab="${k}">${l}</button>`).join("")}</nav>
     <div class="stack" style="margin-top:8px">${body}</div>
@@ -264,7 +337,7 @@ function renderMap() {
   if (!d.topik.length) return `<section class="card">
     <h2>Peta materi belum dibuat</h2>
     <p class="small muted">AI akan memecah seluruh materi menjadi topik-topik berurutan, supaya kamu bisa belajar bagian demi bagian tanpa ada yang terlewat.</p>
-    <button class="btn primary" data-act="topicMapGen">Buat peta materi</button> ${calls(1)}</section>`;
+    <button class="btn primary" data-act="topicMapGen">Buat peta materi</button> ${calls(isLong(d) ? chunkPages(d.pages).length : 1)}</section>`;
 
   const st = d.topik.map((t) => topicStatus(d, t));
   const n = { belum: 0, sedang: 0, dikuasai: 0 };
@@ -499,11 +572,12 @@ async function makeQuiz(src, opts, label, busyText = "Membuat soal…") {
 function genQuiz() {
   const jenis = [...document.querySelectorAll("input[name=jenis]:checked")].map((i) => i.value);
   if (!jenis.length) return toast("Pilih minimal satu jenis soal.", "err");
-  makeQuiz(state.doc, {
+  const sc = scopeFor("qSumber");
+  makeQuiz(sc.src, {
     jumlah: Math.min(Math.max(parseInt(document.getElementById("qJumlah").value) || 10, 1), 30),
     tingkat: document.getElementById("qTingkat").value,
-    jenis, periksa: document.getElementById("qPeriksa").checked,
-  });
+    jenis, periksa: document.getElementById("qPeriksa").checked, fokus: sc.fokus,
+  }, sc.label);
 }
 
 function scoreOf(soal, ans) {
@@ -532,6 +606,7 @@ function tabQuiz() {
   const form = `<details class="card" ${quiz ? "" : "open"}>
     <summary>Buat set soal baru dengan AI</summary>
     <div style="margin-top:12px">
+      ${scopeSelect("qSumber")}
       <div class="grid2">
         <label class="field"><span>Jumlah soal</span><input type="number" id="qJumlah" min="1" max="30" value="${quiz?.opts.jumlah || 15}"></label>
         <label class="field"><span>Tingkat kesulitan</span><select id="qTingkat">
@@ -723,8 +798,9 @@ const intervalText = (c, q) => { const n = schedule(c, q); return n.interval ? `
 
 async function genCards() {
   const jumlah = parseInt(document.getElementById("cJumlah").value) || 15;
+  const sc = scopeFor("cSumber");
   await run("Membuat flashcard…", async (status) => {
-    const r = await AI.flashcards(state.doc, jumlah, state.doc.cards.map((c) => c.depan), status);
+    const r = await AI.flashcards(sc.src, jumlah, state.doc.cards.map((c) => c.depan), status);
     const now = Date.now();
     const seen = new Set(state.doc.cards.map((c) => c.depan.toLowerCase()));
     const semua = (r.kartu || []).filter((k) => k.depan && k.belakang && !seen.has(k.depan.toLowerCase())).map((k) => ({
@@ -756,11 +832,15 @@ function tabCards() {
       <button class="btn primary block" style="margin-top:12px" data-act="reviewDoc" ${due ? "" : "disabled"}>${due ? `Mulai review (${due} kartu)` : "Tidak ada kartu jatuh tempo"}</button>
       <p class="small muted" style="margin-top:12px">Kartu yang kamu anggap sulit akan muncul lebih sering; yang mudah muncul makin jarang. Review flashcard tidak memakai kuota AI.</p>
     </section>
-    <section class="card row">
-      <select id="cJumlah" style="flex:1;min-width:120px" aria-label="Jumlah kartu">
-        ${[10, 15, 20, 30].map((n) => `<option value="${n}" ${n === 20 ? "selected" : ""}>${n} kartu</option>`).join("")}
-      </select>
-      <button class="btn" data-act="cardsGen">${cards.length ? "Tambah kartu" : "Buat flashcard"}</button> ${calls(1)}
+    <section class="card">
+      ${scopeSelect("cSumber")}
+      <div class="row">
+        <select id="cJumlah" style="flex:1;min-width:120px" aria-label="Jumlah kartu">
+          ${[10, 15, 20, 30].map((n) => `<option value="${n}" ${n === 20 ? "selected" : ""}>${n} kartu</option>`).join("")}
+        </select>
+        <button class="btn" data-act="cardsGen">${cards.length ? "Tambah kartu" : "Buat flashcard"}</button>
+      </div>
+      <p class="small muted" style="margin:8px 0 0">Memakai ±1 panggilan AI. Kartu yang sumbernya tidak ditemukan di file otomatis dibuang.</p>
     </section>
     ${cards.length ? `<details class="card"><summary>Lihat semua kartu (${cards.length})</summary>
       ${cards.map((c, i) => `<div class="term" style="margin-top:8px"><b>${esc(c.depan)}</b><br>${esc(c.belakang)}<br>
@@ -857,7 +937,10 @@ async function sendChat(text) {
   try {
     let hist = d.chat.slice(-12);
     while (hist.length && hist[0].role !== "user") hist = hist.slice(1);
-    const reply = await AI.chat(d, hist);
+    // Modul panjang: kirim hanya halaman yang paling relevan dengan pertanyaan (hemat kuota)
+    const query = d.chat.filter((m) => m.role === "user").slice(-2).map((m) => m.text).join(" ");
+    const pages = retrievePages(d.pages, query, CHAT_CHARS);
+    const reply = await AI.chat({ pages }, hist, undefined, pages.length < d.pages.length);
     d.chat.push({ role: "model", text: reply || "(AI tidak memberi jawaban)" });
     await save();
   } catch (e) {
@@ -914,7 +997,7 @@ async function submitFeynman() {
   await run("Mencocokkan penjelasanmu dengan materi…", async (status) => {
     const d = state.doc;
     const topik = d.topik.find((t) => t.judul.toLowerCase() === konsep.toLowerCase());
-    const src = topik ? pagesFor(d, topik.lokasi) : d;
+    const src = topik ? pagesFor(d, topik.lokasi) : { pages: retrievePages(d.pages, konsep + " " + konsep + " " + text, CHAT_CHARS) };
     const h = await AI.feynman(src, konsep, text, status);
     h.skor = Math.max(0, Math.min(100, Math.round(h.skor || 0)));
     for (const x of [...(h.keliru || []), ...(h.terlewat || [])]) x.cek = locateQuote(x.kutipan, d.pages);
@@ -1042,7 +1125,7 @@ const actions = {
   viewText,
   source: (el) => showSource(el.dataset.label, el.dataset.quote),
   sumRegen: () => run("Membuat ringkasan…", async (s) => {
-    const r = await AI.summary(state.doc, document.getElementById("detailSel").value, s);
+    const r = await buildSummary(state.doc, document.getElementById("detailSel").value, s);
     applySummary(state.doc, r, document.getElementById("detailSel").value);
     await save(); renderDoc();
   }),
@@ -1051,9 +1134,9 @@ const actions = {
   topicMapGen: async () => {
     if (state.doc.topik.some((t) => t.paket) && !confirm("Buat ulang peta materi? Kemajuan per topik akan direset (flashcard tetap tersimpan).")) return;
     await run("Membuat peta materi…", async (s) => {
-      const r = await AI.topicMap(state.doc, s);
+      const topik = await buildTopics(state.doc, s);
       state.doc.cards.forEach((c) => delete c.topikId);
-      state.doc.topik = sanitizeTopics(state.doc, r.topik);
+      state.doc.topik = sanitizeTopics(state.doc, topik);
       await save(); renderDoc();
     });
   },
@@ -1129,6 +1212,10 @@ document.addEventListener("click", (e) => {
 });
 document.addEventListener("change", (e) => {
   if (e.target.id === "quizSel") { state.quizId = e.target.value; state.answers = {}; state.revealAll = false; renderDoc(); }
+  if (e.target.matches("[data-scope]")) {
+    const r = document.getElementById(e.target.id + "Range");
+    if (r) r.hidden = e.target.value !== "range";
+  }
   if (e.target.id === "setModel") {
     const l = document.getElementById("setLite");
     if (l && l.value === e.target.value) l.value = "";

@@ -75,6 +75,10 @@ Buka http://localhost:8080 di browser.
 
 ## Batasan
 
-- Paling optimal untuk file hingga sekitar 300.000 karakter (kira-kira 100–150 halaman). File yang lebih panjang otomatis dipotong, dengan pemberitahuan.
-- PDF hasil scan dan foto dibaca dengan OCR AI, maksimal 18 MB per unggahan.
+- **Modul panjang (ratusan halaman) didukung penuh.** Semua halaman disimpan. Ringkasan dan peta materi dibuat per bagian (±130–200 ribu karakter per bagian) lalu digabung. Contoh: modul 200 halaman ≈ 3–4 panggilan AI saat diunggah.
+- Untuk modul panjang:
+  - Soal dan flashcard bisa diambil dari **seluruh materi** (dipilih otomatis dan tersebar, diutamakan bagian yang belum tercakup), **satu topik**, atau **rentang halaman**.
+  - Chat dan uji pemahaman hanya mengirim **halaman yang paling relevan** dengan pertanyaan, jadi tetap hemat kuota.
+- PDF hasil scan dibaca dengan OCR AI per 8 halaman per panggilan, tanpa batas ukuran file. Modul scan 100 halaman ≈ 13 panggilan OCR, jadi sebaiknya diunggah saat kuota harian masih banyak.
+- Foto catatan (JPG/PNG): maksimal 18 MB per unggahan.
 - Butuh internet saat membuat ringkasan, soal, kartu, dan chat. Review flashcard dan membaca hasil yang sudah tersimpan tetap bisa saat sinyal lemah.

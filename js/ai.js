@@ -194,25 +194,38 @@ Tabel ditulis per baris dengan pemisah " | ". Rumus ditulis apa adanya. Untuk di
       });
     },
 
-    // Satu panggilan saat unggah: ringkasan + istilah + peta topik (hemat kuota)
-    async setup(doc, onStatus) {
-      const chars = doc.pages.reduce((n, p) => n + p.text.length, 0);
-      const nT = Math.max(3, Math.min(15, Math.round(chars / 4000)));
+    // Satu panggilan saat unggah: ringkasan + istilah + peta topik (hemat kuota).
+    // Untuk materi panjang dipanggil per bagian (part), lalu ringkasannya digabung.
+    async setup(doc, nT, onStatus, part) {
       return call({
         onStatus, system: RULES,
-        contents: userTurn(doc, `Analisis materi lalu buat:
-1. "judul": judul singkat materi.
-2. "ringkasan": ringkasan umum ${PANJANG.sedang} dalam Markdown dengan sub-judul (##) dan poin-poin. Di akhir setiap poin penting tulis rujukan lokasinya dalam kurung, contoh "(Halaman 3)", sesuai label di MATERI.
+        contents: userTurn(doc, `${part ? `MATERI di atas adalah BAGIAN ${part.i} dari ${part.n} sebuah modul panjang (${part.range}). Kerjakan hanya untuk bagian ini.\n` : ""}Analisis materi lalu buat:
+1. "judul": judul singkat materi${part ? " (bagian ini)" : ""}.
+2. "ringkasan": ringkasan ${part ? "bagian ini, sekitar 200–400 kata," : `umum ${PANJANG.sedang}`} dalam Markdown dengan sub-judul (##) dan poin-poin. Di akhir setiap poin penting tulis rujukan lokasinya dalam kurung, contoh "(Halaman 3)", sesuai label di MATERI.
 3. "istilah": istilah/konsep penting beserta artinya MENURUT MATERI, dengan "kutipan" persis.
 4. "topik": pecah SELURUH materi menjadi sekitar ${nT} topik (boleh ${Math.max(2, nT - 2)}–${nT + 2}) BERURUTAN sesuai alur materi, sehingga setiap bagian materi masuk ke minimal satu topik. Tiap topik: "judul" singkat, "deskripsi" satu kalimat, "lokasi" = daftar label PERSIS seperti tertulis di MATERI (contoh "Halaman 3") yang membahas topik itu.`),
         schema: obj({ judul: STR, ringkasan: STR, istilah: arr(ISTILAH), topik: arr(TOPIK) }),
       });
     },
 
-    async summary(doc, detail, onStatus) {
+    // Gabungkan ringkasan per bagian menjadi satu ringkasan utuh (tanpa mengirim ulang materi lengkap)
+    async mergeSummary(parts, detail, onStatus) {
+      const pseudo = { pages: parts.map((p, i) => ({ label: `Ringkasan bagian ${i + 1} (${p.range})`, text: p.ringkasan })) };
       return call({
         onStatus, system: RULES,
-        contents: userTurn(doc, `Buat ringkasan materi, panjang ${PANJANG[detail]}.
+        contents: userTurn(pseudo, `MATERI di atas berisi ringkasan dari setiap bagian sebuah modul panjang, berurutan.
+Gabungkan menjadi SATU ringkasan utuh, panjang ${PANJANG[detail] || PANJANG.detail}, dalam Markdown dengan sub-judul (##) mengikuti alur modul dan poin-poin.
+- Pertahankan rujukan lokasi asli seperti "(Halaman 37)" apa adanya. Jangan membuat rujukan baru.
+- Jangan menambah informasi yang tidak ada di ringkasan-ringkasan tersebut.
+- "judul": judul singkat untuk seluruh modul.`),
+        schema: obj({ judul: STR, ringkasan: STR }),
+      });
+    },
+
+    async summary(doc, detail, onStatus, part) {
+      return call({
+        onStatus, system: RULES,
+        contents: userTurn(doc, `${part ? `MATERI di atas adalah BAGIAN ${part.i} dari ${part.n} sebuah modul panjang (${part.range}). Ringkas hanya bagian ini.\n` : ""}Buat ringkasan materi, panjang ${part ? "sekitar 200–400 kata" : PANJANG[detail]}.
 - "judul": judul singkat materi.
 - "ringkasan": format Markdown dengan sub-judul (##) dan poin-poin. Di akhir setiap poin penting tulis rujukan lokasinya dalam kurung, contoh "(Halaman 3)" atau "(Bagian 2)", sesuai label di MATERI.
 - "istilah": istilah/konsep penting beserta artinya MENURUT MATERI, dengan "kutipan" persis yang mendukung.`),
@@ -220,12 +233,10 @@ Tabel ditulis per baris dengan pemisah " | ". Rumus ditulis apa adanya. Untuk di
       });
     },
 
-    async topicMap(doc, onStatus) {
-      const chars = doc.pages.reduce((n, p) => n + p.text.length, 0);
-      const nT = Math.max(3, Math.min(15, Math.round(chars / 4000)));
+    async topicMap(doc, nT, onStatus, part) {
       return call({
         onStatus, system: RULES,
-        contents: userTurn(doc, `Pecah SELURUH materi menjadi sekitar ${nT} topik (boleh ${Math.max(2, nT - 2)}–${nT + 2}) BERURUTAN sesuai alur materi, sehingga setiap bagian materi masuk ke minimal satu topik. Tiap topik: "judul" singkat, "deskripsi" satu kalimat, "lokasi" = daftar label PERSIS seperti tertulis di MATERI (contoh "Halaman 3").`),
+        contents: userTurn(doc, `${part ? `MATERI di atas adalah BAGIAN ${part.i} dari ${part.n} sebuah modul panjang (${part.range}).\n` : ""}Pecah SELURUH materi menjadi sekitar ${nT} topik (boleh ${Math.max(2, nT - 2)}–${nT + 2}) BERURUTAN sesuai alur materi, sehingga setiap bagian materi masuk ke minimal satu topik. Tiap topik: "judul" singkat, "deskripsi" satu kalimat, "lokasi" = daftar label PERSIS seperti tertulis di MATERI (contoh "Halaman 3").`),
         schema: obj({ topik: arr(TOPIK) }),
       });
     },
@@ -293,12 +304,12 @@ ${existing.length ? `Jangan membuat kartu yang sama dengan yang sudah ada beriku
       });
     },
 
-    async chat(doc, history, onStatus) {
+    async chat(doc, history, onStatus, partial) {
       return call({
         tier: "ringan", onStatus, temperature: 0.2,
         system: `${RULES}
 6. Kamu sedang menjawab pertanyaan pelajar tentang MATERI di bawah. Sebutkan lokasi sumbernya, contoh "(Halaman 3)".
-7. Jika jawabannya tidak ada di materi, katakan dengan jelas: "Hal ini tidak dibahas di materi yang kamu unggah." Lalu boleh sebutkan bagian materi yang paling terkait.
+7. Jika jawabannya tidak ada di materi, katakan dengan jelas: "${partial ? "Hal ini tidak ditemukan di halaman yang relevan dari materimu. Coba tanyakan dengan kata kunci lain yang ada di modul." : "Hal ini tidak dibahas di materi yang kamu unggah."}" Lalu boleh sebutkan bagian materi yang paling terkait.${partial ? "\n   (Catatan: modul ini panjang, jadi yang diberikan hanya halaman-halaman yang paling relevan dengan pertanyaan.)" : ""}
 8. Boleh menjelaskan ulang dengan bahasa lebih sederhana atau memakai analogi sehari-hari, TETAPI tandai dengan "Analogi:" dan jangan menambah fakta baru.
 9. Jawab ringkas dengan Markdown.
 
