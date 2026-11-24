@@ -137,7 +137,7 @@ async function saveBlobs(docId, blobs) {
 function usageHtml() {
   const rows = AI.usage();
   return `<div class="usage">${rows.map((r) => `<div class="spread small"><span>${esc(r.model)}</span>
-    <span><b>${r.n}</b> permintaan · <span class="${r.status === "siap" ? "ok-t" : "warn-t"}">${r.status}</span></span></div>`).join("")}</div>`;
+    <span><b>${r.n}</b> permintaan · <span class="${r.status === "siap" ? "ok-t" : "warn-t"}">${r.status}</span>${r.tooBig ? ` <span class="muted">(materi besar dilewati)</span>` : ""}</span></div>`).join("")}</div>`;
 }
 
 // ---------- Data materi ----------
@@ -1233,72 +1233,160 @@ async function submitFeynman() {
 }
 
 // ---------- Pengaturan ----------
-function modelOptions(list, selected, allowNone) {
-  const ids = list.map((m) => m.id);
-  const extra = selected && !ids.includes(selected) ? [{ id: selected, name: selected }] : [];
-  return (allowNone ? `<option value="" ${!selected ? "selected" : ""}>Tidak pakai cadangan</option>` : "") +
-    [...extra, ...list].map((m) => `<option value="${esc(m.id)}" ${m.id === selected ? "selected" : ""}>${esc(m.name === m.id ? m.id : `${m.name} (${m.id})`)}</option>`).join("");
-}
+// Draf daftar model selama jendela Pengaturan terbuka: { lists: {pid: [{id,name,ctx}]}, checked: {pid: [id,...]} }
+const SD = { lists: {}, checked: {} };
+const PIDS = ["gemini", "groq", "openrouter"];
+const PROV_INFO = {
+  groq: { title: "Groq", note: "Gratis ±1.000 permintaan/hari per model dan sangat cepat, tetapi batas token per menitnya kecil: permintaan yang membawa banyak halaman otomatis dilewati. Paling berguna untuk chat & flashcard.", prefer: /gpt-oss-120b|llama-3\.3-70b|qwen|kimi|gpt-oss-20b/i },
+  openrouter: { title: "OpenRouter (model gratis)", note: "Kuat untuk materi besar, tetapi jatah gratis hanya ±50 permintaan/hari (1.000/hari jika pernah membeli kredit $10). Dipakai paling akhir. Model gratis bisa mencatat isi permintaan — jangan unggah dokumen rahasia.", prefer: /deepseek|qwen|llama-3\.3|gpt-oss|gemma|mistral/i },
+};
+
 function openSettings() {
-  const s = AI.settings;
+  const s = AI.settings, p = s.providers;
+  SD.checked = { gemini: [...s.gemini], groq: [...(p.groq?.models || [])], openrouter: [...(p.openrouter?.models || [])] };
+  SD.lists = Object.fromEntries(PIDS.map((pid) => [pid, SD.checked[pid].map((id) => ({ id, name: id }))]));
+  const provBlock = (pid) => `
+    <details class="card prov" ${p[pid]?.key ? "open" : ""}>
+      <summary>${PROV_INFO[pid].title}${p[pid]?.key ? ` <span class="pill accent">${(p[pid].models || []).length} model aktif</span>` : ` <span class="pill">belum dipakai</span>`}</summary>
+      <p class="small muted" style="margin-top:8px">${PROV_INFO[pid].note}</p>
+      <ol class="small"><li>Buat akun gratis &amp; ambil API key di <a href="${AI.PROVIDERS[pid].keyUrl}" target="_blank" rel="noopener">${AI.PROVIDERS[pid].keyUrl.replace("https://", "")}</a>.</li>
+        <li>Tempel di bawah, klik <b>Cek &amp; muat model</b>, lalu centang model yang mau dipakai.</li></ol>
+      <label class="field"><span>API key ${AI.PROVIDERS[pid].name}</span><input type="password" id="setKey_${pid}" value="${esc(p[pid]?.key || "")}" autocomplete="off"></label>
+      <div class="row"><button class="btn sm" data-act="loadModels" data-pid="${pid}">Cek &amp; muat model</button>
+        ${p[pid]?.key ? `<button class="link small" data-act="clearProv" data-pid="${pid}">Hapus key</button>` : ""}</div>
+      <div class="mlist" id="ml_${pid}"></div>
+    </details>`;
   openModal(`
     <h2>Pengaturan AI</h2>
-    <p class="small">Aplikasi memakai <b>Google Gemini</b> dengan kuota gratis. Cara mendapatkan API key:</p>
+    <h3>1. Google Gemini — utama (wajib)</h3>
     <ol class="small">
       <li>Buka <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> dan masuk dengan akun Google.</li>
-      <li>Klik <b>Create API key</b>, lalu salin key-nya.</li>
-      <li>Tempel di bawah ini, lalu klik <b>Cek &amp; simpan</b>.</li>
+      <li>Klik <b>Create API key</b>, salin, lalu tempel di bawah.</li>
     </ol>
     <label class="field"><span>API key Gemini</span><input type="password" id="setKey" value="${esc(s.key)}" autocomplete="off" placeholder="AIza…"></label>
-    <label class="field"><span>Model utama (untuk soal, peta materi, penilaian)</span><select id="setModel">${modelOptions([], s.model)}</select></label>
-    <label class="field"><span>Model cadangan / ringan (untuk chat & flashcard, dan saat kuota model utama habis)</span><select id="setLite">${modelOptions([], s.lite, true)}</select></label>
+    <button class="btn sm" data-act="loadModels" data-pid="gemini">Cek &amp; muat model</button>
+    <p class="small muted" style="margin:10px 0 4px"><b>Centang beberapa model.</b> Setiap model Gemini punya kuota harian sendiri; jika satu habis, aplikasi otomatis pindah ke model berikutnya. Nomor = urutan pemakaian (klik "naik" untuk mengubah). Hanya Gemini yang bisa membaca gambar (OCR).</p>
+    <div class="mlist" id="ml_gemini"></div>
+
+    <h3 style="margin-top:20px">2. Penyedia cadangan — opsional, gratis</h3>
+    <p class="small muted">Dipakai jika semua model Gemini habis, dan untuk tugas ringan (chat, flashcard) agar kuota Gemini awet. Tidak bisa membaca gambar.</p>
+    ${provBlock("groq")}
+    ${provBlock("openrouter")}
+
+    <h3 style="margin-top:20px">3. Lainnya</h3>
     <label class="check" style="margin-bottom:12px"><input type="checkbox" id="setVerify" ${s.verify ? "checked" : ""}> Periksa ulang soal oleh AI (lebih akurat, +1 panggilan per set soal)</label>
-    <div class="row"><button class="btn primary" data-act="saveSettings">Cek &amp; simpan</button></div>
+    <button class="btn primary block" data-act="saveSettings">Simpan pengaturan</button>
 
     <h3 style="margin-top:20px">Pemakaian hari ini</h3>
     ${usageHtml()}
-    <p class="small muted" style="margin-top:8px">Setiap model punya kuota gratis harian sendiri, direset sekitar pukul 14.00–15.00 WIB. Batas resminya bisa berubah sewaktu-waktu — lihat <a href="https://ai.google.dev/gemini-api/docs/rate-limits" target="_blank" rel="noopener">halaman batas kuota Gemini</a>.</p>
-    <button class="link small" data-act="resetQuota">Coba lagi model yang ditandai habis</button>
+    <p class="small muted" style="margin-top:8px">Kuota Gemini direset ±14.00–15.00 WIB, Groq &amp; OpenRouter ±07.00 WIB. Batas resmi bisa berubah — lihat <a href="https://ai.google.dev/gemini-api/docs/rate-limits" target="_blank" rel="noopener">batas Gemini</a>.</p>
+    <button class="link small" data-act="resetQuota">Coba lagi model yang ditandai habis / tidak tersedia</button>
 
     <hr style="border:0;border-top:1px solid var(--line);margin:20px 0">
-    <p class="small muted"><b>Privasi:</b> key disimpan hanya di browser ini. Isi file dikirim ke Google untuk diproses. Pada kuota gratis, Google dapat memakai data untuk meningkatkan layanannya — hindari mengunggah dokumen rahasia/pribadi.</p>`);
-  if (s.key) loadModelLists(true);
+    <p class="small muted"><b>Privasi:</b> semua key disimpan hanya di browser ini. Isi materi dikirim ke penyedia AI yang dipakai untuk diproses. Pada kuota gratis, penyedia dapat memakai data untuk meningkatkan layanannya — hindari mengunggah dokumen rahasia/pribadi.</p>`);
+  PIDS.forEach(renderModelList);
+  if (s.key) loadModelList("gemini", true);
+  ["groq", "openrouter"].forEach((pid) => p[pid]?.key && loadModelList(pid, true));
 }
-async function loadModelLists(silent) {
+
+function renderModelList(pid) {
+  const box = document.getElementById(`ml_${pid}`);
+  if (!box) return;
+  const checked = SD.checked[pid], all = SD.lists[pid] || [];
+  const ordered = [...checked.map((id) => all.find((m) => m.id === id) || { id, name: id }), ...all.filter((m) => !checked.includes(m.id))];
+  box.innerHTML = ordered.length
+    ? ordered.map((m) => {
+        const i = checked.indexOf(m.id);
+        return `<label class="mrow"><input type="checkbox" data-mlist="${pid}" value="${esc(m.id)}" ${i >= 0 ? "checked" : ""}>
+          <span class="mname">${i >= 0 ? `<b>${i + 1}.</b> ` : ""}${esc(m.name)}<span class="small muted">${m.name !== m.id ? " · " + esc(m.id) : ""}${m.ctx ? ` · ${Math.round(m.ctx / 1000)}rb token` : ""}</span></span>
+          ${i > 0 ? `<button class="link small" data-act="mUp" data-pid="${pid}" data-id="${esc(m.id)}">naik</button>` : ""}</label>`;
+      }).join("")
+    : `<p class="small muted">Belum ada daftar model. Isi key lalu klik "Cek &amp; muat model".</p>`;
+}
+
+async function loadModelList(pid, silent) {
+  const key = document.getElementById(pid === "gemini" ? "setKey" : `setKey_${pid}`)?.value.trim();
+  if (!key) { if (!silent) toast("Isi API key dulu.", "err"); return; }
+  const box = document.getElementById(`ml_${pid}`);
+  if (box && !silent) box.insertAdjacentHTML("afterbegin", `<p class="small muted" id="ml_wait_${pid}">Memuat daftar model…</p>`);
   try {
-    const models = (await AI.listModels()).sort((a, b) => /flash/i.test(b.id) - /flash/i.test(a.id));
-    const ids = models.map((m) => m.id);
-    const s = AI.settings;
-    if (!ids.includes(s.model)) s.model = ids.includes(AI.DEFAULT_MODEL) ? AI.DEFAULT_MODEL : ids.find((x) => /flash/i.test(x) && !/lite|preview|exp/i.test(x)) || ids[0];
-    if (s.lite && !ids.includes(s.lite)) s.lite = ids.find((x) => /flash-lite/i.test(x) && !/preview|exp/i.test(x)) || "";
-    const m = document.getElementById("setModel"), l = document.getElementById("setLite");
-    if (m) m.innerHTML = modelOptions(models, s.model);
-    if (l) l.innerHTML = modelOptions(models.filter((x) => x.id !== s.model), s.lite, true);
-    return true;
+    const list = pid === "gemini" ? await AI.listModels(key) : await AI.listProviderModels(pid, key);
+    SD.lists[pid] = list;
+    const ids = list.map((m) => m.id);
+    let checked = SD.checked[pid].filter((id) => ids.includes(id));
+    if (pid === "gemini") {
+      // Belum pernah diatur: pakai semua model Flash & Flash-Lite yang stabil (masing-masing kuota sendiri)
+      let custom = false; try { custom = !!localStorage.getItem("ms_gmodels"); } catch {}
+      if (!custom || !checked.length) {
+        const stable = ids.filter((x) => /flash/i.test(x) && !/preview|exp|tts|image|live|thinking/i.test(x));
+        stable.sort((a, b) => (/lite/i.test(a) - /lite/i.test(b)) || b.localeCompare(a, undefined, { numeric: true }));
+        checked = [...new Set([...checked, ...stable])].slice(0, 6);
+      }
+    } else if (!checked.length) {
+      checked = ids.filter((x) => PROV_INFO[pid].prefer.test(x)).slice(0, 3);
+      if (!checked.length) checked = ids.slice(0, 2);
+    }
+    SD.checked[pid] = checked;
+    renderModelList(pid);
+    if (!silent) toast(`${list.length} model ditemukan${pid === "openrouter" ? " (gratis)" : ""}. ${checked.length} dicentang — klik Simpan pengaturan.`);
   } catch (e) {
-    if (!silent) throw e;
-    return false;
+    document.getElementById(`ml_wait_${pid}`)?.remove();
+    if (!silent) toast(e.message || String(e), "err");
   }
 }
+
 async function saveSettings() {
-  const key = document.getElementById("setKey").value.trim();
-  if (!key) return toast("API key masih kosong.", "err");
   const s = AI.settings;
-  const old = s.key;
-  s.key = key;
-  await run("Mengecek API key…", async () => {
-    try { await AI.listModels(); }
-    catch (e) { s.key = old; throw new Error("API key tidak bisa dipakai: " + e.message); }
-    s.model = document.getElementById("setModel").value || s.model;
-    s.lite = document.getElementById("setLite").value;
-    if (s.lite === s.model) s.lite = "";
+  const key = document.getElementById("setKey").value.trim();
+  if (!key) return toast("API key Gemini masih kosong.", "err");
+  if (!SD.checked.gemini.length) return toast("Centang minimal satu model Gemini.", "err");
+  await run("Mengecek API key…", async (status) => {
+    try { await AI.listModels(key); }
+    catch (e) { throw new Error("API key Gemini tidak bisa dipakai: " + e.message); }
+    const prov = {};
+    for (const pid of ["groq", "openrouter"]) {
+      const k = document.getElementById(`setKey_${pid}`).value.trim();
+      if (!k) continue;
+      status(`Mengecek key ${AI.PROVIDERS[pid].name}…`);
+      await AI.checkProviderKey(pid, k);
+      prov[pid] = { key: k, models: SD.checked[pid] };
+    }
+    s.key = key;
+    s.gemini = SD.checked.gemini;
+    s.providers = prov;
     s.verify = document.getElementById("setVerify").checked;
     AI.resetQuotaFlags();
-    await loadModelLists(false);
-    toast(`Tersimpan. Utama: ${s.model}${s.lite ? ` · Cadangan: ${s.lite}` : ""}`);
+    const extra = Object.entries(prov).map(([pid, v]) => `${v.models.length} ${AI.PROVIDERS[pid].name}`).join(" + ");
+    toast(`Tersimpan: ${s.gemini.length} model Gemini${extra ? " + " + extra : ""}.`);
+    closeModal();
     if (state.view === "home") renderHome();
   });
 }
+
+// "actions" baru dibuat di bawah file ini → daftarkan setelah skrip selesai dimuat
+queueMicrotask(() => Object.assign(actions, {
+  loadModels: (el) => loadModelList(el.dataset.pid, false),
+  mUp: (el, e) => {
+    e.preventDefault();
+    const c = SD.checked[el.dataset.pid], i = c.indexOf(el.dataset.id);
+    if (i > 0) [c[i - 1], c[i]] = [c[i], c[i - 1]];
+    renderModelList(el.dataset.pid);
+  },
+  clearProv: (el) => {
+    document.getElementById(`setKey_${el.dataset.pid}`).value = "";
+    SD.checked[el.dataset.pid] = [];
+    renderModelList(el.dataset.pid);
+    toast("Key dihapus dari formulir — klik Simpan pengaturan.");
+  },
+}));
+document.addEventListener("change", (e) => {
+  const pid = e.target.dataset?.mlist;
+  if (!pid) return;
+  const c = SD.checked[pid];
+  if (e.target.checked) { if (!c.includes(e.target.value)) c.push(e.target.value); }
+  else SD.checked[pid] = c.filter((x) => x !== e.target.value);
+  renderModelList(pid);
+});
 
 // ---------- Cadangan ----------
 async function exportData() {
@@ -1527,10 +1615,6 @@ document.addEventListener("change", (e) => {
   if (e.target.matches("[data-scope]")) {
     const r = document.getElementById(e.target.id + "Range");
     if (r) r.hidden = e.target.value !== "range";
-  }
-  if (e.target.id === "setModel") {
-    const l = document.getElementById("setLite");
-    if (l && l.value === e.target.value) l.value = "";
   }
 });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });

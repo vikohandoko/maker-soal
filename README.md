@@ -25,10 +25,16 @@ Aplikasi belajar pribadi: unggah materi (PDF, Word, TXT, atau foto catatan), lal
 
 ## Hemat kuota gratis
 
-- **Model cadangan otomatis.** Setiap model Gemini punya kuota harian sendiri. Jika kuota model utama (Flash) habis, aplikasi otomatis pindah ke model cadangan (Flash-Lite).
-- **Tugas ringan memakai model ringan.** Chat dan pembuatan flashcard memakai Flash-Lite. Soal, peta materi, dan penilaian memakai model utama yang lebih teliti.
+- **Banyak model Gemini bergiliran.** Di Pengaturan, centang beberapa model Gemini, misalnya Flash dan Flash-Lite dari beberapa generasi. Masing-masing punya kuota harian sendiri, dan jika satu habis, aplikasi otomatis pindah ke model berikutnya.
+- **Penyedia cadangan (opsional, gratis):**
+  - **Groq**: sekitar 1.000 permintaan/hari per model, tapi tidak kuat untuk materi besar.
+  - **OpenRouter**: hanya model gratis, sekitar 50 permintaan/hari, tapi kuat untuk materi besar.
+
+  Keduanya butuh akun dan API key sendiri. Mereka dipakai saat semua model Gemini habis, dan untuk tugas ringan agar kuota Gemini awet. OCR (membaca gambar) hanya memakai Gemini.
+- **Hemat percobaan.** Jika suatu model menolak karena materi terlalu besar, aplikasi mengingatnya dan langsung melompatinya untuk permintaan sebesar itu. Jika key suatu penyedia ditolak, seluruh model penyedia itu dilewati.
+- **Tugas ringan dulu ke model ringan.** Chat dan flashcard dicoba lebih dulu di Groq, lalu Gemini Flash-Lite. Soal, peta materi, dan penilaian memakai Gemini lebih dulu.
 - **Panggilan digabung.** Saat unggah, ringkasan dan peta materi dibuat dalam 1 panggilan. Setiap topik (penjelasan, kartu, dan soal) juga dibuat dalam 1 panggilan, dan baru dibuat saat topik itu dibuka.
-- **Penghitung pemakaian.** Jumlah permintaan per model hari ini terlihat di halaman utama dan Pengaturan. Kuota direset sekitar pukul 14.00–15.00 WIB.
+- **Penghitung pemakaian.** Jumlah permintaan per model hari ini terlihat di halaman utama dan Pengaturan. Kuota Gemini direset sekitar pukul 14.00–15.00 WIB, Groq & OpenRouter sekitar pukul 07.00 WIB.
 - **Mode hemat.** Pemeriksaan ulang soal bisa dimatikan di Pengaturan, menghemat 1 panggilan per set soal (ketelitian sedikit turun).
 - Review flashcard, mengerjakan ulang soal, dan latihan tanpa kuota **tidak memakai AI**.
 

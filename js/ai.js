@@ -1,42 +1,76 @@
-// Koneksi ke Google Gemini (kuota gratis) + semua instruksi untuk AI.
-// Hemat kuota: model cadangan otomatis, penghitung pemakaian harian, tugas ringan memakai model ringan.
+// Koneksi AI: Google Gemini (utama) + penyedia cadangan opsional (Groq, OpenRouter).
+// Hemat kuota: banyak model bergiliran (masing-masing punya kuota sendiri), penghitung pemakaian,
+// tugas ringan memakai model ringan, dan permintaan yang terlalu besar untuk suatu model langsung dilewati.
 const AI = (() => {
   const API = "https://generativelanguage.googleapis.com/v1beta";
   const DEFAULT_MODEL = "gemini-2.5-flash";
   const DEFAULT_LITE = "gemini-2.5-flash-lite";
 
+  // Penyedia cadangan berformat OpenAI (bisa dipanggil langsung dari browser)
+  const PROVIDERS = {
+    groq: { name: "Groq", url: "https://api.groq.com/openai/v1", keyUrl: "https://console.groq.com/keys", json: true },
+    openrouter: { name: "OpenRouter", url: "https://openrouter.ai/api/v1", keyUrl: "https://openrouter.ai/keys", json: false },
+  };
+
   const store = {
     get(k) { try { return localStorage.getItem(k) || ""; } catch { return ""; } },
     set(k, v) { try { localStorage.setItem(k, v); } catch {} },
   };
+  const jget = (k, d) => { try { return JSON.parse(store.get(k)) ?? d; } catch { return d; } };
+
   const settings = {
     get key() { return store.get("ms_key"); },
     set key(v) { store.set("ms_key", v.trim()); },
-    get model() { return store.get("ms_model") || DEFAULT_MODEL; },
-    set model(v) { store.set("ms_model", v); },
-    // Model cadangan/ringan. "none" = tidak dipakai.
-    get lite() { const v = store.get("ms_lite"); return v === "none" ? "" : v || DEFAULT_LITE; },
-    set lite(v) { store.set("ms_lite", v || "none"); },
+    // Daftar model Gemini yang dipakai, berurutan (utama dulu). Versi lama: ms_model + ms_lite.
+    get gemini() {
+      const list = jget("ms_gmodels", null);
+      if (Array.isArray(list) && list.length) return list;
+      const lite = store.get("ms_lite");
+      return [store.get("ms_model") || DEFAULT_MODEL, lite === "none" ? "" : lite || DEFAULT_LITE].filter(Boolean);
+    },
+    set gemini(list) { store.set("ms_gmodels", JSON.stringify(list)); },
+    get model() { return this.gemini[0] || DEFAULT_MODEL; }, // kompatibilitas
+    // { groq: {key, models:[]}, openrouter: {key, models:[]} }
+    get providers() { return jget("ms_prov", {}); },
+    set providers(v) { store.set("ms_prov", JSON.stringify(v)); },
     get verify() { return store.get("ms_verify") !== "0"; },
     set verify(v) { store.set("ms_verify", v ? "1" : "0"); },
   };
 
   // ---------- Kuota ----------
-  // Kuota harian Gemini direset tengah malam waktu Pasifik (≈ 14.00–15.00 WIB).
+  // Gemini direset tengah malam waktu Pasifik (≈ 14.00–15.00 WIB); Groq/OpenRouter tengah malam UTC (07.00 WIB).
   const ptDate = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date());
+  const utcDate = () => new Date().toISOString().slice(0, 10);
+  const provOf = (key) => key.split(":")[0];
+  const dateFor = (key) => (provOf(key) === "gemini" ? ptDate() : utcDate());
   function quota() {
     let s;
     try { s = JSON.parse(store.get("ms_quota") || "{}"); } catch { s = {}; }
-    if (s.date !== ptDate()) s = { date: ptDate(), usage: {}, dayOut: {}, minuteOut: {}, missing: {} };
+    if (s.date || !s.v) s = { v: 2, usage: {}, dayOut: {}, minuteOut: {}, missing: {}, tooBig: {} }; // format lama → mulai baru
+    for (const k of Object.keys(s.usage)) if (s.usage[k].d !== dateFor(k)) delete s.usage[k];
+    for (const k of Object.keys(s.dayOut)) if (s.dayOut[k] !== dateFor(k)) delete s.dayOut[k];
+    for (const k of Object.keys(s.tooBig)) if (s.tooBig[k].d !== dateFor(k)) delete s.tooBig[k];
     return s;
   }
   const saveQuota = (s) => store.set("ms_quota", JSON.stringify(s));
-  const available = (m, s) => !s.dayOut[m] && !s.missing[m] && !(s.minuteOut[m] > Date.now());
-  function chain(tier) {
-    const list = tier === "ringan" ? [settings.lite, settings.model] : [settings.model, settings.lite];
-    return [...new Set(list.filter(Boolean))];
+  const available = (k, s, size) =>
+    !s.dayOut[k] && !s.missing[k] && !(s.minuteOut[k] > Date.now()) && !(s.tooBig[k] && size >= s.tooBig[k].n * 0.9);
+
+  // Rantai model: "berat" = Gemini dulu; "ringan" = Groq dulu (hemat Gemini untuk OCR & tugas berat).
+  // Tugas bergambar (OCR) hanya bisa memakai Gemini.
+  function chain(tier, vision) {
+    const g = settings.gemini.map((m) => `gemini:${m}`);
+    const gLiteFirst = [...g].sort((a, b) => /lite/i.test(b) - /lite/i.test(a));
+    if (vision) return g;
+    const p = settings.providers;
+    const extra = (id) => (p[id]?.key ? (p[id].models || []).map((m) => `${id}:${m}`) : []);
+    const list = tier === "ringan"
+      ? [...extra("groq"), ...gLiteFirst, ...extra("openrouter")]
+      : [...g, ...extra("groq"), ...extra("openrouter")];
+    return [...new Set(list)];
   }
-  const QUOTA_MSG = "Kuota gratis harian semua model sudah habis. Kuota direset sekitar pukul 14.00–15.00 WIB. Sementara itu kamu tetap bisa review flashcard, mengerjakan soal yang tersimpan, dan latihan tanpa kuota.";
+  const label = (k) => { const [p, ...m] = k.split(":"); return `${p === "gemini" ? "Gemini" : PROVIDERS[p]?.name || p} · ${m.join(":")}`; };
+  const QUOTA_MSG = "Kuota gratis harian semua model sudah habis. Kuota Gemini direset sekitar pukul 14.00–15.00 WIB (Groq/OpenRouter pukul 07.00 WIB). Sementara itu kamu tetap bisa review flashcard, mengerjakan soal yang tersimpan, dan latihan tanpa kuota.";
 
   // Aturan utama: hanya boleh memakai isi materi.
   const RULES = `Kamu adalah asisten belajar yang sangat teliti dan jujur.
@@ -48,85 +82,142 @@ ATURAN WAJIB:
 5. Jika materi mengandung kesalahan, tetap ikuti materi tetapi jangan membuat soal dari bagian yang meragukan.`;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const quotaErr = (kind, retry = 30) => Object.assign(new Error(kind), { kind, retry: Math.min(retry, 65) });
 
-  async function callModel(model, body) {
+  // ----- Gemini -----
+  async function callGemini(model, req) {
+    const body = { contents: req.contents, generationConfig: { temperature: req.temperature } };
+    if (req.system) body.systemInstruction = { parts: [{ text: req.system }] };
+    if (req.schema) { body.generationConfig.responseMimeType = "application/json"; body.generationConfig.responseSchema = req.schema; }
     let r;
     try {
       r = await fetch(`${API}/models/${model}:generateContent`, {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-goog-api-key": settings.key },
-        body: JSON.stringify(body),
+        method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": settings.key }, body: JSON.stringify(body),
       });
-    } catch {
-      throw new Error("Tidak bisa terhubung ke internet / server Google.");
-    }
+    } catch { throw new Error("Tidak bisa terhubung ke internet / server Google."); }
     const j = await r.json().catch(() => ({}));
     if (r.status === 429 || r.status === 503) {
       const det = j.error?.details || [];
       const ids = det.flatMap((d) => (d.violations || []).map((v) => v.quotaId || "")).join(" ");
       const perDay = /PerDay/i.test(ids) || /per.?day|daily/i.test(j.error?.message || "");
-      const retry = parseInt(det.find((d) => d.retryDelay)?.retryDelay) || (r.status === 503 ? 10 : 30);
-      throw Object.assign(new Error("quota"), { kind: perDay ? "day" : "minute", retry: Math.min(retry, 65) });
+      throw quotaErr(perDay ? "day" : "minute", parseInt(det.find((d) => d.retryDelay)?.retryDelay) || (r.status === 503 ? 10 : 30));
     }
-    if (r.status === 404) throw Object.assign(new Error("missing"), { kind: "missing" });
+    if (r.status === 404) throw quotaErr("missing");
     if (!r.ok) {
       const msg = j.error?.message || `HTTP ${r.status}`;
-      if (/API key not valid|API_KEY_INVALID/i.test(msg)) throw new Error("API key tidak valid. Periksa lagi di Pengaturan.");
+      if (/API key not valid|API_KEY_INVALID/i.test(msg)) throw new Error("API key Gemini tidak valid. Periksa lagi di Pengaturan.");
+      if (/token count|too large|exceeds/i.test(msg)) throw quotaErr("size");
       throw new Error("Gemini menolak permintaan: " + msg);
     }
-    return j;
+    const cand = j.candidates?.[0];
+    if (!cand) throw new Error("AI tidak memberi jawaban" + (j.promptFeedback?.blockReason ? ` (diblokir: ${j.promptFeedback.blockReason})` : "") + ".");
+    return { text: (cand.content?.parts || []).filter((p) => !p.thought).map((p) => p.text || "").join(""), truncated: cand.finishReason === "MAX_TOKENS" };
+  }
+
+  // ----- Groq / OpenRouter (format OpenAI) -----
+  // Skema Gemini (tipe huruf besar) → JSON Schema biasa, dipakai sebagai petunjuk format di prompt
+  const toJsonSchema = (s) => {
+    const o = { type: s.type.toLowerCase() };
+    if (s.enum) o.enum = s.enum;
+    if (s.properties) { o.properties = Object.fromEntries(Object.entries(s.properties).map(([k, v]) => [k, toJsonSchema(v)])); o.required = s.required; }
+    if (s.items) o.items = toJsonSchema(s.items);
+    return o;
+  };
+  async function callOpenAI(pid, model, req) {
+    const P = PROVIDERS[pid], key = settings.providers[pid]?.key;
+    let system = req.system || "";
+    if (req.schema) system += `\n\nFORMAT JAWABAN: keluarkan HANYA satu objek JSON valid (tanpa teks lain, tanpa \`\`\`) yang sesuai JSON Schema berikut:\n${JSON.stringify(toJsonSchema(req.schema))}`;
+    const messages = [
+      ...(system ? [{ role: "system", content: system }] : []),
+      ...req.contents.map((c) => ({ role: c.role === "model" ? "assistant" : "user", content: c.parts.map((p) => p.text || "").join("\n") })),
+    ];
+    const body = { model, messages, temperature: req.temperature, max_tokens: 8000 };
+    if (req.schema && P.json) body.response_format = { type: "json_object" };
+    let r;
+    try {
+      r = await fetch(`${P.url}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${key}`, ...(pid === "openrouter" ? { "X-Title": "Maker Soal" } : {}) },
+        body: JSON.stringify(body),
+      });
+    } catch { throw new Error(`Tidak bisa terhubung ke ${P.name}.`); }
+    const j = await r.json().catch(() => ({}));
+    const msg = j.error?.message || j.message || `HTTP ${r.status}`;
+    if (r.status === 413 || /too large|context length|maximum context|reduce the length|tokens per minute|TPM/i.test(msg)) throw quotaErr("size");
+    if (r.status === 429 || r.status === 402) {
+      const perDay = r.status === 402 || /per.?day|daily|RPD|TPD|free-models-per-day/i.test(msg);
+      throw quotaErr(perDay ? "day" : "minute", parseInt(r.headers.get("retry-after")) || 20);
+    }
+    if (r.status >= 500) throw quotaErr("minute", 10);
+    if (r.status === 401 || r.status === 403) throw Object.assign(quotaErr("missing"), { auth: true, reason: "key ditolak — periksa Pengaturan" }); // lewati SEMUA model penyedia ini
+    if (/data policy|privacy/i.test(msg)) throw Object.assign(quotaErr("missing"), { reason: "perlu izin: aktifkan model gratis di openrouter.ai/settings/privacy" });
+    if (r.status === 404 || /model.*(not found|does not exist|decommission|not available)/i.test(msg)) throw quotaErr("missing");
+    if (!r.ok) {
+      if (/json/i.test(msg)) return { text: "", truncated: false }; // mode JSON gagal → anggap format rusak, coba lagi
+      throw new Error(`${P.name} menolak permintaan: ${msg}`);
+    }
+    const ch = j.choices?.[0];
+    let text = ch?.message?.content;
+    if (Array.isArray(text)) text = text.map((x) => x.text || "").join("");
+    text = String(text || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    return { text, truncated: ch?.finish_reason === "length" };
   }
 
   async function call({ tier = "berat", system, contents, schema, temperature = 0.2, onStatus }) {
     if (!settings.key) throw new Error("API key Gemini belum diisi. Buka Pengaturan (ikon roda gigi).");
-    const body = { contents, generationConfig: { temperature } };
-    if (system) body.systemInstruction = { parts: [{ text: system }] };
-    if (schema) {
-      body.generationConfig.responseMimeType = "application/json";
-      body.generationConfig.responseSchema = schema;
-    }
-    const models = chain(tier);
-    let badJson = 0;
-    for (let round = 0; round < 8; round++) {
+    const vision = contents.some((c) => c.parts.some((p) => p.inline_data));
+    const size = (system || "").length + contents.reduce((n, c) => n + c.parts.reduce((m, p) => m + (p.text || "").length, 0), 0);
+    const req = { system, contents, schema, temperature };
+    const models = chain(tier, vision);
+    const bad = new Map(); // format JSON rusak per model (percobaan ini saja)
+    for (let round = 0; round < 14; round++) {
       const s = quota();
-      const model = models.find((m) => available(m, s));
-      if (!model) {
-        if (models.every((m) => s.missing[m])) throw new Error("Model AI yang dipilih tidak tersedia. Pilih model lain di Pengaturan.");
-        const waits = models.filter((m) => !s.dayOut[m] && !s.missing[m]).map((m) => s.minuteOut[m] - Date.now()).filter((x) => x > 0);
-        if (!waits.length) throw new Error(QUOTA_MSG);
+      const key = models.find((k) => available(k, s, size) && (bad.get(k) || 0) < 2);
+      if (!key) {
+        if (models.every((k) => s.missing[k])) throw new Error("Semua model AI yang dipilih tidak tersedia atau key-nya ditolak. Periksa Pengaturan.");
+        if (models.every((k) => s.missing[k] || s.dayOut[k] || (s.tooBig[k] && size >= s.tooBig[k].n * 0.9) || (bad.get(k) || 0) >= 2)) {
+          if (models.some((k) => (bad.get(k) || 0) >= 2)) throw new Error("Format jawaban AI rusak. Coba lagi.");
+          throw new Error(QUOTA_MSG);
+        }
+        const waits = models.map((k) => s.minuteOut[k] - Date.now()).filter((x) => x > 0);
         const ms = Math.min(...waits, 65000);
-        onStatus?.(`Batas per menit tercapai — menunggu ${Math.ceil(ms / 1000)} detik…`);
+        onStatus?.(`Batas per menit tercapai di semua model — menunggu ${Math.ceil(ms / 1000)} detik…`);
         await sleep(ms + 500);
         continue;
       }
-      let j;
-      try { j = await callModel(model, body); }
+      const [pid, ...rest] = key.split(":");
+      const model = rest.join(":");
+      let res;
+      try { res = pid === "gemini" ? await callGemini(model, req) : await callOpenAI(pid, model, req); }
       catch (e) {
         if (!e.kind) throw e;
         const s2 = quota();
-        if (e.kind === "day") s2.dayOut[model] = true;
-        else if (e.kind === "missing") s2.missing[model] = true;
-        else s2.minuteOut[model] = Date.now() + e.retry * 1000;
+        if (e.kind === "day") s2.dayOut[key] = dateFor(key);
+        else if (e.kind === "missing") {
+          s2.missing[key] = e.reason || true;
+          if (e.auth) for (const k of models) if (k.startsWith(pid + ":")) s2.missing[k] = e.reason; // key salah berlaku untuk semua modelnya
+        }
+        else if (e.kind === "size") s2.tooBig[key] = { n: Math.min(size, s2.tooBig[key]?.n ?? Infinity), d: dateFor(key) };
+        else s2.minuteOut[key] = Date.now() + e.retry * 1000;
+        if (pid !== "gemini" && e.kind !== "size") s2.usage[key] = { d: dateFor(key), n: (s2.usage[key]?.n || 0) + 1 }; // OpenRouter menghitung permintaan gagal
         saveQuota(s2);
-        const next = models.find((m) => m !== model && available(m, s2));
-        if (next) onStatus?.(e.kind === "day" ? `Kuota harian ${model} habis — pindah ke ${next}…` : `Pindah sementara ke ${next}…`);
+        const next = models.find((k) => k !== key && available(k, s2, size));
+        const why = { day: "kuota harian habis", minute: "sedang sibuk/batas per menit", missing: "tidak tersedia", size: "materi terlalu besar untuk model ini" }[e.kind];
+        if (next) onStatus?.(`${label(key)}: ${why} — pindah ke ${label(next)}…`);
         continue;
       }
       const s3 = quota();
-      s3.usage[model] = (s3.usage[model] || 0) + 1;
+      s3.usage[key] = { d: dateFor(key), n: (s3.usage[key]?.n || 0) + 1 };
       saveQuota(s3);
-
-      const cand = j.candidates?.[0];
-      if (!cand) throw new Error("AI tidak memberi jawaban" + (j.promptFeedback?.blockReason ? ` (diblokir: ${j.promptFeedback.blockReason})` : "") + ".");
-      const text = (cand.content?.parts || []).filter((p) => !p.thought).map((p) => p.text || "").join("");
-      if (cand.finishReason === "MAX_TOKENS" && schema) throw new Error("Jawaban AI terpotong karena terlalu panjang. Kurangi jumlah soal/kartu.");
-      if (!schema) return text;
-      try { return JSON.parse(text); }
+      if (res.truncated && schema) throw new Error("Jawaban AI terpotong karena terlalu panjang. Kurangi jumlah soal/kartu.");
+      if (!schema) { if (res.text) return res.text; bad.set(key, (bad.get(key) || 0) + 1); continue; }
+      const t = res.text.replace(/^```(?:json)?\s*|\s*```$/g, "");
+      try { return JSON.parse(t); }
       catch {
-        const a = text.indexOf("{"), b = text.lastIndexOf("}");
-        try { return JSON.parse(text.slice(a, b + 1)); } catch {}
-        if (++badJson < 2) continue;
-        throw new Error("Format jawaban AI rusak. Coba lagi.");
+        const a = t.indexOf("{"), b = t.lastIndexOf("}");
+        try { return JSON.parse(t.slice(a, b + 1)); } catch {}
+        bad.set(key, (bad.get(key) || 0) + 1);
+        onStatus?.(`Format jawaban ${label(key)} rusak — mencoba lagi…`);
       }
     }
     throw new Error("Gagal mendapat jawaban dari AI. Coba lagi.");
@@ -157,26 +248,51 @@ ATURAN WAJIB:
   const PANJANG = { singkat: "sekitar 150–250 kata", sedang: "sekitar 300–600 kata", detail: "lengkap, mencakup semua konsep penting" };
 
   return {
-    settings, DEFAULT_MODEL, DEFAULT_LITE,
+    settings, DEFAULT_MODEL, DEFAULT_LITE, PROVIDERS, label,
 
-    // Ringkasan pemakaian hari ini untuk ditampilkan
+    // Ringkasan pemakaian hari ini untuk ditampilkan (semua model dalam rantai + yang pernah dipakai)
     usage() {
       const s = quota();
-      const models = [...new Set([...chain("berat"), ...Object.keys(s.usage)])];
-      return models.map((m) => ({
-        model: m, n: s.usage[m] || 0,
-        status: s.missing[m] ? "tidak tersedia" : s.dayOut[m] ? "habis hari ini" : s.minuteOut[m] > Date.now() ? "jeda sebentar" : "siap",
+      const keys = [...new Set([...chain("berat"), ...Object.keys(s.usage)])];
+      return keys.map((k) => ({
+        key: k, model: label(k), n: s.usage[k]?.n || 0,
+        status: s.missing[k] ? (typeof s.missing[k] === "string" ? s.missing[k] : "tidak tersedia") : s.dayOut[k] ? "habis hari ini" : s.minuteOut[k] > Date.now() ? "jeda sebentar" : "siap",
+        tooBig: !!s.tooBig[k],
       }));
     },
-    resetQuotaFlags() { const s = quota(); s.dayOut = {}; s.minuteOut = {}; s.missing = {}; saveQuota(s); },
+    resetQuotaFlags() { const s = quota(); s.dayOut = {}; s.minuteOut = {}; s.missing = {}; s.tooBig = {}; saveQuota(s); },
 
-    async listModels() {
-      const r = await fetch(`${API}/models?pageSize=200`, { headers: { "x-goog-api-key": settings.key } });
+    async listModels(key = settings.key) {
+      const r = await fetch(`${API}/models?pageSize=200`, { headers: { "x-goog-api-key": key } });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error?.message || "Gagal memuat model");
       return (j.models || [])
-        .filter((m) => m.supportedGenerationMethods?.includes("generateContent") && /gemini/i.test(m.name) && !/embedding|tts|image|live|audio/i.test(m.name))
+        .filter((m) => m.supportedGenerationMethods?.includes("generateContent") && /gemini/i.test(m.name) && !/embedding|tts|image|live|audio|robotics|computer-use/i.test(m.name))
         .map((m) => ({ id: m.name.replace("models/", ""), name: m.displayName || m.name }));
+    },
+
+    // Daftar model chat dari Groq / OpenRouter (OpenRouter: hanya yang gratis)
+    async listProviderModels(pid, key) {
+      const P = PROVIDERS[pid];
+      const r = await fetch(`${P.url}/models`, { headers: key ? { authorization: `Bearer ${key}` } : {} });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(r.status === 401 ? `API key ${P.name} tidak valid.` : j.error?.message || `Gagal memuat model ${P.name}`);
+      let list = j.data || [];
+      if (pid === "openrouter") {
+        list = list.filter((m) => (m.id.endsWith(":free") || (m.pricing && +m.pricing.prompt === 0 && +m.pricing.completion === 0))
+          && (m.architecture?.output_modalities || ["text"]).includes("text") && (m.context_length || 0) >= 32000);
+      } else {
+        list = list.filter((m) => m.active !== false && !/whisper|tts|guard|playai|orpheus|distil|embed|compound/i.test(m.id));
+      }
+      return list.map((m) => ({ id: m.id, name: m.name || m.id, ctx: m.context_length || m.context_window || 0 }))
+        .sort((a, b) => (b.ctx - a.ctx) || a.id.localeCompare(b.id));
+    },
+    // Cek cepat apakah key penyedia bisa dipakai (Groq: daftar model butuh key; OpenRouter: cek /key)
+    async checkProviderKey(pid, key) {
+      const url = pid === "openrouter" ? `${PROVIDERS.openrouter.url}/key` : `${PROVIDERS[pid].url}/models`;
+      const r = await fetch(url, { headers: { authorization: `Bearer ${key}` } });
+      if (!r.ok) throw new Error(`API key ${PROVIDERS[pid].name} tidak valid (HTTP ${r.status}).`);
+      return true;
     },
 
     async ocr(files, onStatus) {
