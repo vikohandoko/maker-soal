@@ -251,6 +251,15 @@ blockquote { margin: 0 0 12px; padding-left: 12px; border-left: 3px solid var(--
 }
 @media (min-width: 640px) { .modal { align-items: center; } .modal-box { border-radius: 16px; padding: 24px; } }
 .modal-close { position: absolute; top: 10px; right: 10px; font-size: 1.1rem; line-height: 1; }
+.seg { display: inline-flex; gap: 4px; padding: 4px; background: var(--surface-2); border-radius: 10px; margin-bottom: 10px; }
+.seg-btn { border: 0; background: none; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-weight: 500; color: var(--muted); min-height: 36px; }
+.seg-btn[aria-selected="true"] { background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
+.page-img { margin: 8px 0; }
+.page-img img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.page-img a { display: inline-block; margin-top: 6px; }
+.source-md { font-size: .92rem; background: var(--surface-2); padding: 12px; border-radius: 10px; max-height: 55vh; overflow: auto; }
+.prose table { font-size: .9rem; }
+.prose th { background: var(--surface-2); text-align: left; }
 .source-text { white-space: pre-wrap; font-size: .92rem; background: var(--surface-2); padding: 12px; border-radius: 10px; max-height: 55vh; overflow-y: auto; }
 mark { background: #ffe27a; color: #1e2320; border-radius: 2px; }
 

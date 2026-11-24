@@ -191,7 +191,14 @@ async function ocrBatch(imgs, onStatus) {
 }
 
 // OCR banyak gambar, per OCR_BATCH gambar per panggilan
-async function ocrFiles(files, onStatus, what = "") {
+const b64ToBlob = (b64, type = "image/jpeg") => {
+  const bin = atob(b64), u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  return new Blob([u], { type });
+};
+
+// keep (opsional): kumpulkan gambar yang sudah diperkecil, untuk disimpan sebagai "halaman asli"
+async function ocrFiles(files, onStatus, what = "", keep = null) {
   const out = [];
   const n = Math.ceil(files.length / OCR_BATCH);
   for (let b = 0; b < files.length; b += OCR_BATCH) {
@@ -199,6 +206,7 @@ async function ocrFiles(files, onStatus, what = "") {
     onStatus(`${what}Menyiapkan gambar ${b + 1}–${b + batch.length}…`);
     const imgs = [];
     for (const f of batch) imgs.push(await prepImage(f));
+    if (keep) imgs.forEach((g) => keep.push(g.data));
     onStatus(`${what}OCR gambar ${b + 1}–${b + batch.length} dari ${files.length} (${b / OCR_BATCH + 1}/${n} panggilan AI)…`);
     out.push(...(await ocrBatch(imgs, onStatus)));
   }
@@ -224,6 +232,7 @@ async function extractFiles(files, onStatus) {
   const others = files.filter((f) => !isImageFile(f));
   let pages = [];
   const methods = new Set();
+  const blobs = []; // file asli untuk "lihat halaman asli": [{key, blob}]
 
   for (const f of others) {
     const ext = f.name.split(".").pop().toLowerCase();
@@ -232,6 +241,7 @@ async function extractFiles(files, onStatus) {
       const r = await readPdf(f, prefix, onStatus);
       pages.push(...r.pages);
       methods.add(r.method);
+      blobs.push({ key: `pdf|${multi ? f.name : ""}`, blob: f });
     } else if (ext === "docx") {
       onStatus(`Membaca ${f.name}…`);
       const { value } = await mammoth.extractRawText({ arrayBuffer: await f.arrayBuffer() });
@@ -247,8 +257,10 @@ async function extractFiles(files, onStatus) {
 
   if (images.length) {
     const sorted = naturalSort(images);
-    const texts = await ocrFiles(sorted, (s) => onStatus(s), "");
+    const kept = [];
+    const texts = await ocrFiles(sorted, (s) => onStatus(s), "", kept);
     pages.push(...texts.map((t, i) => ({ label: `Gambar ${i + 1}`, text: t })));
+    kept.forEach((d, i) => blobs.push({ key: `img|Gambar ${i + 1}`, blob: b64ToBlob(d) }));
     methods.add("ocr");
   }
 
@@ -264,7 +276,7 @@ async function extractFiles(files, onStatus) {
     kept.push(p);
     acc += p.text.length;
   }
-  return { pages: kept, method: methods.has("ocr") ? "ocr" : "teks", truncated, totalPages: pages.length };
+  return { pages: kept, method: methods.has("ocr") ? "ocr" : "teks", truncated, totalPages: pages.length, blobs };
 }
 
 // ---------- Pengecek kutipan: memastikan kutipan benar-benar ada di file ----------

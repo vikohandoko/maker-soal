@@ -188,7 +188,9 @@ ATURAN WAJIB:
             ...files.map((f) => ({ inline_data: { mime_type: f.mime, data: f.data } })),
             { text: `Transkripsikan SELURUH teks pada dokumen/gambar di atas PERSIS apa adanya. Jangan meringkas, jangan menerjemahkan, jangan memperbaiki, jangan menambah.
 Awali setiap halaman (atau setiap gambar) dengan baris penanda tersendiri: ===HALAMAN n=== (n mulai dari 1).
-Tabel ditulis per baris dengan pemisah " | ". Rumus ditulis apa adanya. Untuk diagram/gambar tanpa teks tulis [gambar: keterangan singkat apa yang terlihat]. Tulisan yang tidak terbaca tulis [tidak terbaca].
+TABEL: tulis sebagai tabel Markdown yang utuh — baris judul kolom, baris pemisah |---|---|, lalu satu baris tabel per baris; isi setiap sel persis seperti aslinya (sel kosong biarkan kosong, sel gabungan ulangi isinya). Beri satu baris kosong sebelum dan sesudah tabel.
+DIAGRAM/BAGAN/SKEMA/GAMBAR: salin semua tulisan/label di dalamnya, lalu jelaskan isinya dalam format [diagram: ...] — sebutkan jenisnya (alur, hierarki, siklus, perbandingan, peta konsep, grafik) dan hubungan antar-bagiannya secara lengkap, misalnya "A → B → C", "X terbagi menjadi Y dan Z", atau nilai pada grafik. Jangan menambah informasi yang tidak tampak di gambar. Foto/ilustrasi tanpa informasi penting cukup ditulis [gambar: keterangan singkat].
+Rumus ditulis apa adanya. Tulisan yang tidak terbaca tulis [tidak terbaca].
 Jika gambar berupa SCREENSHOT layar HP/komputer dari aplikasi pembaca buku digital: salin HANYA isi halaman buku/modul. Abaikan elemen antarmuka seperti status bar (jam, baterai, sinyal), tombol, menu, bilah navigasi, kotak pencarian, nomor halaman milik aplikasi, dan notifikasi.
 Jika sebuah gambar tidak berisi teks sama sekali, tetap tulis penandanya lalu [halaman kosong].` },
           ],
@@ -249,7 +251,7 @@ Gabungkan menjadi SATU ringkasan utuh, panjang ${PANJANG[detail] || PANJANG.deta
         onStatus, system: RULES, temperature: 0.3,
         contents: userTurn(subDoc, `Fokus HANYA pada topik: "${topik.judul}" — ${topik.deskripsi || ""}
 Buat paket belajar:
-- "penjelasan": penjelasan lengkap topik ini dalam Markdown (sub-judul ###, poin-poin, contoh dari materi bila ada). Tulis rujukan lokasi dalam kurung, contoh "(Halaman 3)".
+- "penjelasan": penjelasan lengkap topik ini dalam Markdown (sub-judul ###, poin-poin, contoh dari materi bila ada). Tulis rujukan lokasi dalam kurung, contoh "(Halaman 3)". Jika materi topik ini memuat TABEL, sajikan ulang sebagai tabel Markdown (isi sesuai materi). Jika ada DIAGRAM (ditandai [diagram: ...]), jelaskan alur/hubungannya dengan jelas, boleh memakai panah (A → B → C).
 - "poin_kunci": 3–6 poin terpenting topik ini, masing-masing dengan "kutipan" persis.
 - "kartu": 4–8 flashcard. ${KARTU_RULES}
 - "soal": tepat 4 soal (3 pilihan_ganda + 1 isian) tentang topik ini.
@@ -316,7 +318,7 @@ ${existing.length ? `Jangan membuat kartu yang sama dengan yang sudah ada beriku
 6. Kamu sedang menjawab pertanyaan pelajar tentang MATERI di bawah. Sebutkan lokasi sumbernya, contoh "(Halaman 3)".
 7. Jika jawabannya tidak ada di materi, katakan dengan jelas: "${partial ? "Hal ini tidak ditemukan di halaman yang relevan dari materimu. Coba tanyakan dengan kata kunci lain yang ada di modul." : "Hal ini tidak dibahas di materi yang kamu unggah."}" Lalu boleh sebutkan bagian materi yang paling terkait.${partial ? "\n   (Catatan: modul ini panjang, jadi yang diberikan hanya halaman-halaman yang paling relevan dengan pertanyaan.)" : ""}
 8. Boleh menjelaskan ulang dengan bahasa lebih sederhana atau memakai analogi sehari-hari, TETAPI tandai dengan "Analogi:" dan jangan menambah fakta baru.
-9. Jawab ringkas dengan Markdown.
+9. Jawab ringkas dengan Markdown. Untuk perbandingan atau data dari tabel di materi, boleh menyajikan tabel Markdown.
 
 MATERI:
 """

@@ -70,12 +70,68 @@ function showSource(label, quote) {
       if (m) body = esc(raw.slice(0, m.index)) + "<mark>" + esc(m[0]) + "</mark>" + esc(raw.slice(m.index + m[0].length));
     }
   }
+  const marked_ = body.includes("<mark>");
+  // Tanpa sorotan kutipan: tampilkan tabel sebagai tabel
+  const textHtml = marked_ ? `<div class="source-text" id="srcText">${body}</div>` : pageHtml(page?.text || "", "srcText");
+  // Halaman berisi tabel/diagram, atau dibuka tanpa kutipan → tampilkan gambar asli lebih dulu
+  const imgFirst = !marked_ || hasVisual(page?.text || "");
   openModal(`
     <h2>${esc(page ? page.label : "Kutipan")}</h2>
     ${quote ? `<p class="small muted">Kutipan yang dipakai AI:</p><blockquote class="small">“${esc(quote)}”</blockquote>` : ""}
-    ${page ? `<p class="small muted">Teks asli dari file kamu:</p><div class="source-text" id="srcText">${body}</div>`
+    ${page ? `<div class="seg" role="tablist">
+        <button class="seg-btn" data-act="srcView" data-v="img" aria-selected="${imgFirst}">Halaman asli</button>
+        <button class="seg-btn" data-act="srcView" data-v="txt" aria-selected="${!imgFirst}">Teks hasil baca</button>
+      </div>
+      <div id="srcPaneImg" ${imgFirst ? "" : "hidden"}><div class="page-img" id="srcImg"><p class="small muted">Memuat halaman asli…</p></div></div>
+      <div id="srcPaneTxt" ${imgFirst ? "hidden" : ""}>${textHtml}</div>`
       : `<p>Kutipan ini tidak ditemukan di file. Kemungkinan AI memparafrasekan atau keliru — periksa secara manual.</p>`}`);
-  document.querySelector("#srcText mark")?.scrollIntoView({ block: "center" });
+  if (!imgFirst) document.querySelector("#srcText mark")?.scrollIntoView({ block: "center" });
+  if (page) loadPageImage(doc, page.label, document.getElementById("srcImg"));
+}
+
+// ---------- Halaman asli (gambar) & tabel ----------
+const hasTable = (t) => /^\s*\|.*\|\s*$/m.test(t);
+const hasVisual = (t) => hasTable(t) || /\[(diagram|gambar|tabel)\b/i.test(t);
+function pageHtml(text, id = "") {
+  return hasTable(text)
+    ? `<div class="prose source-md" ${id ? `id="${id}"` : ""}>${md(text)}</div>`
+    : `<div class="source-text" ${id ? `id="${id}"` : ""}>${esc(text)}</div>`;
+}
+const _pdfCache = new Map();
+async function pageImageURL(doc, label) {
+  const img = await DB.files.get(`${doc.id}|img|${label}`);
+  if (img) return URL.createObjectURL(img);
+  const m = label.match(/^(?:(.*) · )?Halaman (\d+)$/);
+  if (!m) return null;
+  const key = `${doc.id}|pdf|${m[1] || ""}`;
+  let pdf = _pdfCache.get(key);
+  if (!pdf) {
+    const blob = await DB.files.get(key);
+    if (!blob) return null;
+    pdf = await pdfjsLib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()), isEvalSupported: false }).promise;
+    _pdfCache.set(key, pdf);
+  }
+  const n = +m[2];
+  if (n < 1 || n > pdf.numPages) return null;
+  return "data:image/jpeg;base64," + (await renderPage(pdf, n));
+}
+async function loadPageImage(doc, label, el) {
+  if (!el) return;
+  try {
+    const url = await pageImageURL(doc, label);
+    if (!document.body.contains(el)) return;
+    el.innerHTML = url
+      ? `<img src="${url}" alt="Halaman asli: ${esc(label)}"><a class="small" href="${url}" target="_blank" rel="noopener">Buka ukuran penuh</a>`
+      : `<p class="small muted">Gambar halaman asli tidak tersedia di perangkat ini. Ini terjadi untuk file Word/teks, materi yang diunggah sebelum fitur ini ada, atau materi hasil impor dari perangkat lain. Unggah ulang filenya untuk bisa melihat halaman asli.</p>`;
+  } catch (e) {
+    el.innerHTML = `<p class="small muted">Gagal memuat halaman asli: ${esc(e.message || e)}</p>`;
+  }
+}
+async function saveBlobs(docId, blobs) {
+  for (const b of blobs || []) {
+    try { await DB.files.put(`${docId}|${b.key}`, b.blob); }
+    catch (e) { toast("Halaman asli tidak bisa disimpan (penyimpanan browser penuh). Materi tetap tersimpan.", "err"); break; }
+  }
 }
 
 function usageHtml() {
@@ -260,7 +316,7 @@ async function renderHome() {
 
     <section class="card">
       <h2>Cadangan data</h2>
-      <p class="small muted">Semua materi, soal, dan kemajuan belajar tersimpan di browser perangkat ini saja. Ekspor secara berkala agar tidak hilang, atau untuk memindahkan data antara laptop dan HP.</p>
+      <p class="small muted">Semua materi, soal, dan kemajuan belajar tersimpan di browser perangkat ini saja. Ekspor secara berkala agar tidak hilang, atau untuk memindahkan data antara laptop dan HP. Gambar halaman asli tidak ikut diekspor (agar file cadangan tetap kecil).</p>
       <div class="row">
         <button class="btn" data-act="export">Ekspor data</button>
         <label class="btn">Impor data<input type="file" id="importInput" accept=".json,application/json" hidden></label>
@@ -287,6 +343,7 @@ async function handleFiles(files) {
       summary: null, topik: [], quizzes: [], cards: [], chat: [], feynman: [],
     };
     await DB.put(doc);
+    await saveBlobs(doc.id, r.blobs);
     state.doc = doc;
     try {
       status(isLong(doc) ? `Modul panjang (${doc.pages.length} bagian) — diproses dalam ${setupCalls(doc)} panggilan AI…` : "Membuat ringkasan dan peta materi…");
@@ -301,6 +358,7 @@ async function handleFiles(files) {
 
 async function openDoc(id, opts = {}) {
   const d = await DB.get(id);
+  if (!d) return toast("Materi ini tidak ditemukan (mungkin tidak ada teks yang terbaca).", "err");
   Object.assign(d, { topik: d.topik || [], feynman: d.feynman || [], quizzes: d.quizzes || [], cards: d.cards || [], chat: d.chat || [] });
   state.doc = d;
   state.view = "doc";
@@ -1143,8 +1201,10 @@ async function importData(file) {
 
 function viewText() {
   openModal(`<h2>Teks hasil baca file</h2>
-    <p class="small muted">Inilah satu-satunya sumber yang dipakai AI. Jika ada bagian yang salah baca, hasil soal juga bisa terpengaruh.</p>
-    ${state.doc.pages.map((p) => `<h3 style="margin-top:16px">${esc(p.label)}</h3><div class="source-text">${esc(p.text)}</div>`).join("")}`);
+    <p class="small muted">Inilah satu-satunya sumber yang dipakai AI. Jika ada bagian yang salah baca, hasil soal juga bisa terpengaruh. Bandingkan dengan halaman aslinya lewat tombol "Lihat halaman asli".</p>
+    ${state.doc.pages.map((p, i) => `<div class="spread" style="margin-top:16px"><h3 style="margin:0">${esc(p.label)}${hasVisual(p.text) ? ` <span class="pill">tabel/diagram</span>` : ""}</h3>
+      <button class="btn sm" data-act="pageImg" data-i="${i}">Lihat halaman asli</button></div>
+      <div class="page-img" id="pimg${i}" hidden></div>${pageHtml(p.text)}`).join("")}`);
 }
 
 // ---------- Aksi (klik) ----------
@@ -1163,6 +1223,17 @@ const actions = {
   tab: (el) => { state.tab = el.dataset.tab; if (el.dataset.tab === "belajar") state.topicId = null; renderDoc(); },
   viewText,
   source: (el) => showSource(el.dataset.label, el.dataset.quote),
+  srcView: (el) => {
+    document.querySelectorAll(".seg-btn").forEach((b) => b.setAttribute("aria-selected", b === el));
+    document.getElementById("srcPaneImg").hidden = el.dataset.v !== "img";
+    document.getElementById("srcPaneTxt").hidden = el.dataset.v !== "txt";
+  },
+  pageImg: (el) => {
+    const box = document.getElementById("pimg" + el.dataset.i);
+    if (!box.hidden) { box.hidden = true; el.textContent = "Lihat halaman asli"; return; }
+    box.hidden = false; el.textContent = "Sembunyikan";
+    if (!box.innerHTML) { box.innerHTML = `<p class="small muted">Memuat…</p>`; loadPageImage(state.doc, state.doc.pages[+el.dataset.i].label, box); }
+  },
   sumRegen: () => run("Membuat ringkasan…", async (s) => {
     const r = await buildSummary(state.doc, document.getElementById("detailSel").value, s);
     applySummary(state.doc, r, document.getElementById("detailSel").value);

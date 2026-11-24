@@ -76,7 +76,7 @@ function renderImgTool() {
       <div class="info"><div class="title">${esc(m.name)}</div>
         <div class="small muted">${m.files.length} gambar · ${esc(m.files[0]?.name || "")}${m.files.length > 1 ? " … " + esc(m.files[m.files.length - 1].name) : ""}</div></div>
       <span class="pill ${cls}">${st}</span>
-      ${m.docId ? `<button class="btn sm" data-act="open" data-id="${m.docId}" ${running ? "disabled" : ""}>Buka</button>` : ""}
+      ${m.done && m.docId ? `<button class="btn sm" data-act="open" data-id="${m.docId}" ${running ? "disabled" : ""}>Buka</button>` : ""}
     </div>`;
   }).join("")}</div>`;
 
@@ -166,12 +166,15 @@ async function runImgJob() {
   try {
     for (const m of J.modules) {
       if (m.done) continue;
+      if (J.simpan) m.docId ||= uid();
       while (m.texts.length < m.files.length) {
         const start = m.texts.length;
         const batch = m.files.slice(start, start + OCR_BATCH);
         setImgStatus(`${m.name}: menyiapkan halaman ${start + 1}–${start + batch.length}…`);
         const imgs = [];
         for (const f of batch) imgs.push(await prepImage(f));
+        // Simpan gambar halaman agar bisa dilihat di materi (tabel/diagram tampil utuh)
+        if (J.simpan) await saveBlobs(m.docId, imgs.map((g, k) => ({ key: `img|Halaman ${start + k + 1}`, blob: b64ToBlob(g.data) })));
         setImgStatus(`${m.name}: membaca halaman ${start + 1}–${start + batch.length} dari ${m.files.length}…`);
         m.texts.push(...(await ocrBatch(imgs, setImgStatus)));
         setImgStatus(`${m.name}: ${m.texts.length}/${m.files.length} halaman terbaca`);
