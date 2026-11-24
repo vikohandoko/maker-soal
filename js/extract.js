@@ -154,6 +154,57 @@ function samplePages(pages, budget, used = new Set()) {
   return [...pick].sort((a, b) => a - b).map((i) => pages[i]);
 }
 
+// ---------- Gambar / screenshot ----------
+const IMG_EXT = /\.(png|jpe?g|webp|bmp|gif)$/i;
+const isImageFile = (f) => (f.type ? f.type.startsWith("image/") && !/heic|heif/i.test(f.type) : IMG_EXT.test(f.name)) || IMG_EXT.test(f.name);
+// "Screenshot (2)" sebelum "Screenshot (10)"
+const naturalSort = (files) => [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+
+// Perkecil gambar (sisi terpanjang maks. maxSide px) dan ubah ke JPEG → hemat ukuran kiriman & memori
+async function prepImage(file, maxSide = 1600, quality = 0.82) {
+  let bmp;
+  try { bmp = await createImageBitmap(file); }
+  catch { throw new Error(`Gambar "${file.name}" tidak bisa dibuka (format tidak didukung atau file rusak).`); }
+  const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close?.();
+  const data = c.toDataURL("image/jpeg", quality).split(",")[1];
+  const out = { data, w: c.width, h: c.height };
+  c.width = c.height = 0;
+  return out;
+}
+
+// OCR satu kelompok gambar (sudah diperkecil) → array teks sesuai urutan gambar
+async function ocrBatch(imgs, onStatus) {
+  const raw = await AI.ocr(imgs.map((g) => ({ mime: "image/jpeg", data: g.data })), onStatus);
+  const got = splitOcr(raw, "", "Halaman");
+  const out = imgs.map(() => "");
+  got.forEach((g) => {
+    const k = parseInt(g.label.replace(/\D+/g, "")) - 1;
+    if (k >= 0 && k < out.length) out[k] = g.text;
+  });
+  return out;
+}
+
+// OCR banyak gambar, per OCR_BATCH gambar per panggilan
+async function ocrFiles(files, onStatus, what = "") {
+  const out = [];
+  const n = Math.ceil(files.length / OCR_BATCH);
+  for (let b = 0; b < files.length; b += OCR_BATCH) {
+    const batch = files.slice(b, b + OCR_BATCH);
+    onStatus(`${what}Menyiapkan gambar ${b + 1}–${b + batch.length}…`);
+    const imgs = [];
+    for (const f of batch) imgs.push(await prepImage(f));
+    onStatus(`${what}OCR gambar ${b + 1}–${b + batch.length} dari ${files.length} (${b / OCR_BATCH + 1}/${n} panggilan AI)…`);
+    out.push(...(await ocrBatch(imgs, onStatus)));
+  }
+  return out;
+}
+
 function splitOcr(text, prefix, word) {
   const parts = text.split(/===\s*HALAMAN\s*(\d+)\s*===/i);
   const pages = [];
@@ -169,8 +220,8 @@ function splitOcr(text, prefix, word) {
 async function extractFiles(files, onStatus) {
   files = [...files];
   const multi = files.length > 1;
-  const images = files.filter((f) => f.type.startsWith("image/"));
-  const others = files.filter((f) => !f.type.startsWith("image/"));
+  const images = files.filter(isImageFile);
+  const others = files.filter((f) => !isImageFile(f));
   let pages = [];
   const methods = new Set();
 
@@ -195,11 +246,9 @@ async function extractFiles(files, onStatus) {
   }
 
   if (images.length) {
-    const size = images.reduce((n, f) => n + f.size, 0);
-    if (size > 18 * 1024 * 1024) throw new Error("Total ukuran gambar terlalu besar (>18 MB). Kirim lebih sedikit foto sekaligus.");
-    onStatus(`Membaca ${images.length} gambar dengan OCR AI…`);
-    const parts = await Promise.all(images.map(async (f) => ({ mime: f.type, data: await fileToBase64(f) })));
-    pages.push(...splitOcr(await AI.ocr(parts), "", "Gambar"));
+    const sorted = naturalSort(images);
+    const texts = await ocrFiles(sorted, (s) => onStatus(s), "");
+    pages.push(...texts.map((t, i) => ({ label: `Gambar ${i + 1}`, text: t })));
     methods.add("ocr");
   }
 

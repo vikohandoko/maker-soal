@@ -188,7 +188,9 @@ ATURAN WAJIB:
             ...files.map((f) => ({ inline_data: { mime_type: f.mime, data: f.data } })),
             { text: `Transkripsikan SELURUH teks pada dokumen/gambar di atas PERSIS apa adanya. Jangan meringkas, jangan menerjemahkan, jangan memperbaiki, jangan menambah.
 Awali setiap halaman (atau setiap gambar) dengan baris penanda tersendiri: ===HALAMAN n=== (n mulai dari 1).
-Tabel ditulis per baris dengan pemisah " | ". Rumus ditulis apa adanya. Untuk diagram/gambar tanpa teks tulis [gambar: keterangan singkat apa yang terlihat]. Tulisan yang tidak terbaca tulis [tidak terbaca].` },
+Tabel ditulis per baris dengan pemisah " | ". Rumus ditulis apa adanya. Untuk diagram/gambar tanpa teks tulis [gambar: keterangan singkat apa yang terlihat]. Tulisan yang tidak terbaca tulis [tidak terbaca].
+Jika gambar berupa SCREENSHOT layar HP/komputer dari aplikasi pembaca buku digital: salin HANYA isi halaman buku/modul. Abaikan elemen antarmuka seperti status bar (jam, baterai, sinyal), tombol, menu, bilah navigasi, kotak pencarian, nomor halaman milik aplikasi, dan notifikasi.
+Jika sebuah gambar tidak berisi teks sama sekali, tetap tulis penandanya lalu [halaman kosong].` },
           ],
         }],
       });

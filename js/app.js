@@ -200,6 +200,7 @@ async function render() {
   window.scrollTo(0, 0);
   if (state.view === "doc") return renderDoc();
   if (state.view === "review") return renderReview();
+  if (state.view === "images") return renderImgTool();
   return renderHome();
 }
 
@@ -221,6 +222,12 @@ async function renderHome() {
         <strong>Pilih atau seret file ke sini</strong>
         <span class="small muted">PDF, Word (.docx), TXT, atau foto catatan. Beberapa foto bisa dipilih sekaligus.</span>
       </label>
+    </section>
+
+    <section class="card spread">
+      <div style="flex:1;min-width:200px"><h2 style="margin:0">Gambar → PDF</h2>
+        <span class="small muted">${state.imgJob ? `Sedang diproses: ${esc(state.imgJob.kursus)}` : "Ubah folder screenshot modul menjadi PDF yang bisa dicari + materi belajar."}</span></div>
+      <button class="btn" data-act="imgTool">${state.imgJob ? "Lanjutkan" : "Buka"}</button>
     </section>
 
     ${due ? `<section class="card spread">
@@ -336,8 +343,8 @@ function renderMap() {
   const d = state.doc;
   if (!d.topik.length) return `<section class="card">
     <h2>Peta materi belum dibuat</h2>
-    <p class="small muted">AI akan memecah seluruh materi menjadi topik-topik berurutan, supaya kamu bisa belajar bagian demi bagian tanpa ada yang terlewat.</p>
-    <button class="btn primary" data-act="topicMapGen">Buat peta materi</button> ${calls(isLong(d) ? chunkPages(d.pages).length : 1)}</section>`;
+    <p class="small muted">AI akan memecah seluruh materi menjadi topik-topik berurutan, supaya kamu bisa belajar bagian demi bagian tanpa ada yang terlewat.${d.summary ? "" : " Ringkasan materi juga ikut dibuat."}</p>
+    <button class="btn primary" data-act="topicMapGen">Buat ${d.summary ? "peta materi" : "ringkasan & peta materi"}</button> ${calls(d.summary ? (isLong(d) ? chunkPages(d.pages).length : 1) : setupCalls(d))}</section>`;
 
   const st = d.topik.map((t) => topicStatus(d, t));
   const n = { belum: 0, sedang: 0, dikuasai: 0 };
@@ -1166,6 +1173,13 @@ const actions = {
   topicMapGen: async () => {
     if (state.doc.topik.some((t) => t.paket) && !confirm("Buat ulang peta materi? Kemajuan per topik akan direset (flashcard tetap tersimpan).")) return;
     await run("Membuat peta materi…", async (s) => {
+      if (!state.doc.summary) {
+        // Materi dari alat Gambar → PDF: ringkasan + peta dibuat sekaligus
+        const r = await buildSetup(state.doc, s);
+        applySummary(state.doc, r, "sedang");
+        state.doc.topik = sanitizeTopics(state.doc, r.topik);
+        await save(); return renderDoc();
+      }
       const topik = await buildTopics(state.doc, s);
       state.doc.cards.forEach((c) => delete c.topikId);
       state.doc.topik = sanitizeTopics(state.doc, topik);

@@ -11,6 +11,12 @@ Aplikasi belajar pribadi: unggah materi (PDF, Word, TXT, atau foto catatan), lal
 5. **Tanya materi**: chat yang hanya menjawab dari isi file
 6. **Uji pemahaman (metode Feynman)**: jelaskan dengan kata-katamu, lalu AI menilai berdasarkan materi
 7. **Latihan tanpa kuota**: acak ulang soal lama, cocokkan istilah, dan tebak istilah, tanpa memakai AI sama sekali
+8. **Gambar → PDF** (di laptop): pilih folder mata kuliah yang berisi subfolder per modul (misalnya `Hukum Adat/Modul 1/…png`). Aplikasi lalu:
+   - membaca tulisan tiap screenshot dengan OCR (8 gambar per panggilan AI),
+   - membuat **satu PDF yang bisa dicari** (Ctrl+F) dengan bookmark per modul,
+   - menyimpan tiap modul sebagai materi belajar.
+
+   Jika kuota habis di tengah jalan, pilih folder yang sama besok, dan modul yang sudah selesai akan dilewati otomatis.
 
 ## Hemat kuota gratis
 
