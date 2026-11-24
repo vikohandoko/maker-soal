@@ -84,18 +84,37 @@ ATURAN WAJIB:
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const quotaErr = (kind, retry = 30) => Object.assign(new Error(kind), { kind, retry: Math.min(retry, 65) });
 
+  // Setiap permintaan punya batas waktu (server kadang tidak menjawab sama sekali) dan bisa dihentikan pengguna.
+  const active = new Set();
+  let cancelled = false;
+  async function fetchJson(url, opt, ms) {
+    const ctrl = new AbortController();
+    active.add(ctrl);
+    const t = setTimeout(() => ctrl.abort(), ms);
+    try {
+      const r = await fetch(url, { ...opt, signal: ctrl.signal });
+      const j = await r.json().catch((e) => { if (ctrl.signal.aborted) throw e; return {}; });
+      return { r, j };
+    } catch (e) {
+      if (cancelled) throw Object.assign(new Error("Dihentikan."), { cancel: true });
+      if (ctrl.signal.aborted) throw quotaErr("slow", 30);
+      throw e;
+    } finally { clearTimeout(t); active.delete(ctrl); }
+  }
+
   // ----- Gemini -----
   async function callGemini(model, req) {
     const body = { contents: req.contents, generationConfig: { temperature: req.temperature } };
     if (req.system) body.systemInstruction = { parts: [{ text: req.system }] };
     if (req.schema) { body.generationConfig.responseMimeType = "application/json"; body.generationConfig.responseSchema = req.schema; }
-    let r;
+    // OCR tidak butuh "berpikir": matikan agar jauh lebih cepat (hanya model 2.5 Flash/Flash-Lite yang bisa dimatikan)
+    if (req.fast && /2\.5-flash/i.test(model)) body.generationConfig.thinkingConfig = { thinkingBudget: 0 };
+    let r, j;
     try {
-      r = await fetch(`${API}/models/${model}:generateContent`, {
+      ({ r, j } = await fetchJson(`${API}/models/${model}:generateContent`, {
         method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": settings.key }, body: JSON.stringify(body),
-      });
-    } catch { throw new Error("Tidak bisa terhubung ke internet / server Google."); }
-    const j = await r.json().catch(() => ({}));
+      }, req.vision ? 180000 : 300000));
+    } catch (e) { if (e.kind || e.cancel) throw e; throw new Error("Tidak bisa terhubung ke internet / server Google."); }
     if (r.status === 429 || r.status === 503) {
       const det = j.error?.details || [];
       const ids = det.flatMap((d) => (d.violations || []).map((v) => v.quotaId || "")).join(" ");
@@ -133,15 +152,14 @@ ATURAN WAJIB:
     ];
     const body = { model, messages, temperature: req.temperature, max_tokens: 8000 };
     if (req.schema && P.json) body.response_format = { type: "json_object" };
-    let r;
+    let r, j;
     try {
-      r = await fetch(`${P.url}/chat/completions`, {
+      ({ r, j } = await fetchJson(`${P.url}/chat/completions`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${key}`, ...(pid === "openrouter" ? { "X-Title": "Maker Soal" } : {}) },
         body: JSON.stringify(body),
-      });
-    } catch { throw new Error(`Tidak bisa terhubung ke ${P.name}.`); }
-    const j = await r.json().catch(() => ({}));
+      }, 240000));
+    } catch (e) { if (e.kind || e.cancel) throw e; throw new Error(`Tidak bisa terhubung ke ${P.name}.`); }
     const msg = j.error?.message || j.message || `HTTP ${r.status}`;
     if (r.status === 413 || /too large|context length|maximum context|reduce the length|tokens per minute|TPM/i.test(msg)) throw quotaErr("size");
     if (r.status === 429 || r.status === 402) {
@@ -163,11 +181,12 @@ ATURAN WAJIB:
     return { text, truncated: ch?.finish_reason === "length" };
   }
 
-  async function call({ tier = "berat", system, contents, schema, temperature = 0.2, onStatus }) {
+  async function call({ tier = "berat", system, contents, schema, temperature = 0.2, onStatus, fast = false }) {
     if (!settings.key) throw new Error("API key Gemini belum diisi. Buka Pengaturan (ikon roda gigi).");
+    cancelled = false;
     const vision = contents.some((c) => c.parts.some((p) => p.inline_data));
     const size = (system || "").length + contents.reduce((n, c) => n + c.parts.reduce((m, p) => m + (p.text || "").length, 0), 0);
-    const req = { system, contents, schema, temperature };
+    const req = { system, contents, schema, temperature, fast, vision };
     const models = chain(tier, vision);
     const bad = new Map(); // format JSON rusak per model (percobaan ini saja)
     for (let round = 0; round < 14; round++) {
@@ -183,6 +202,7 @@ ATURAN WAJIB:
         const ms = Math.min(...waits, 65000);
         onStatus?.(`Batas per menit tercapai di semua model — menunggu ${Math.ceil(ms / 1000)} detik…`);
         await sleep(ms + 500);
+        if (cancelled) throw Object.assign(new Error("Dihentikan."), { cancel: true });
         continue;
       }
       const [pid, ...rest] = key.split(":");
@@ -202,8 +222,8 @@ ATURAN WAJIB:
         if (pid !== "gemini" && e.kind !== "size") s2.usage[key] = { d: dateFor(key), n: (s2.usage[key]?.n || 0) + 1 }; // OpenRouter menghitung permintaan gagal
         saveQuota(s2);
         const next = models.find((k) => k !== key && available(k, s2, size));
-        const why = { day: "kuota harian habis", minute: "sedang sibuk/batas per menit", missing: "tidak tersedia", size: "materi terlalu besar untuk model ini" }[e.kind];
-        if (next) onStatus?.(`${label(key)}: ${why} — pindah ke ${label(next)}…`);
+        const why = { day: "kuota harian habis", minute: "sedang sibuk/batas per menit", missing: "tidak tersedia", size: "materi terlalu besar untuk model ini", slow: "terlalu lama tidak menjawab" }[e.kind];
+        onStatus?.(next ? `${label(key)}: ${why} — pindah ke ${label(next)}…` : `${label(key)}: ${why} — mencoba lagi…`);
         continue;
       }
       const s3 = quota();
@@ -260,6 +280,7 @@ ATURAN WAJIB:
         tooBig: !!s.tooBig[k],
       }));
     },
+    cancel() { cancelled = true; active.forEach((c) => c.abort()); },
     resetQuotaFlags() { const s = quota(); s.dayOut = {}; s.minuteOut = {}; s.missing = {}; s.tooBig = {}; saveQuota(s); },
 
     async listModels(key = settings.key) {
@@ -298,7 +319,7 @@ ATURAN WAJIB:
 
     async ocr(files, onStatus) {
       return call({
-        onStatus, temperature: 0,
+        onStatus, temperature: 0, fast: true,
         contents: [{
           role: "user",
           parts: [

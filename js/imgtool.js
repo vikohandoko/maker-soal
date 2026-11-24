@@ -95,7 +95,9 @@ function renderImgTool() {
       <h2>${J.phase === "building" ? "Membuat PDF…" : "Membaca tulisan…"}</h2>
       <div class="progress" style="margin:10px 0"><i id="imgBar" style="width:${(done / total) * 100}%"></i></div>
       <p id="imgStatus" class="small">${esc(J.status)}</p>
-      <p class="small muted">Biarkan halaman ini tetap terbuka. Modul yang sudah selesai langsung tersimpan, jadi kalau terhenti kamu bisa melanjutkan.</p>
+      <p id="imgSub" class="small muted"></p>
+      <p class="small muted">Biarkan halaman ini tetap terbuka. Satu kelompok 8 gambar biasanya selesai dalam 15–60 detik. Modul yang sudah selesai langsung tersimpan, jadi kalau terhenti kamu bisa melanjutkan.</p>
+      ${running ? `<button class="btn sm" data-act="imgStop">Hentikan</button>` : ""}
     </section>`;
   } else if (J.phase === "paused") {
     main = `<section class="card notice">
@@ -175,8 +177,15 @@ async function runImgJob() {
         for (const f of batch) imgs.push(await prepImage(f));
         // Simpan gambar halaman agar bisa dilihat di materi (tabel/diagram tampil utuh)
         if (J.simpan) await saveBlobs(m.docId, imgs.map((g, k) => ({ key: `img|Halaman ${start + k + 1}`, blob: b64ToBlob(g.data) })));
+        if (J.stopReq) throw new Error("stop");
         setImgStatus(`${m.name}: membaca halaman ${start + 1}–${start + batch.length} dari ${m.files.length}…`);
-        m.texts.push(...(await ocrBatch(imgs, setImgStatus)));
+        // Tampilkan detik berjalan + kabar dari AI (pindah model, menunggu batas per menit) agar tidak terlihat macet
+        const t0 = Date.now();
+        let sub = "";
+        const showSub = () => { const el = document.getElementById("imgSub"); if (el) el.textContent = `Menunggu jawaban AI… ${Math.round((Date.now() - t0) / 1000)} detik${sub ? " · " + sub : ""}`; };
+        const tick = setInterval(showSub, 1000);
+        try { m.texts.push(...(await ocrBatch(imgs, (s) => { sub = s; showSub(); }))); }
+        finally { clearInterval(tick); const el = document.getElementById("imgSub"); if (el) el.textContent = ""; }
         setImgStatus(`${m.name}: ${m.texts.length}/${m.files.length} halaman terbaca`);
       }
       m.done = true;
@@ -186,9 +195,11 @@ async function runImgJob() {
     J.phase = "done";
   } catch (e) {
     console.error(e);
-    J.phase = "paused"; J.error = e.message || String(e);
+    J.phase = "paused";
+    J.error = J.stopReq ? "Dihentikan. Klik Lanjutkan untuk meneruskan dari halaman terakhir." : e.message || String(e);
   } finally {
     window.onbeforeunload = null;
+    J.stopReq = false;
   }
   renderImgTool();
 }
@@ -275,6 +286,12 @@ function downloadImgText() {
 Object.assign(actions, {
   imgTool: () => { renderImgTool(); scrollTo(0, 0); },
   imgStart: () => runImgJob(),
+  imgStop: (el) => {
+    if (!state.imgJob) return;
+    state.imgJob.stopReq = true;
+    el.disabled = true; el.textContent = "Menghentikan…";
+    AI.cancel();
+  },
   imgReset: () => { state.imgJob = null; renderImgTool(); },
   imgPdf: () => buildImgPdf(),
   imgTxt: downloadImgText,
