@@ -280,7 +280,8 @@ ATURAN WAJIB:
       let list = j.data || [];
       if (pid === "openrouter") {
         list = list.filter((m) => (m.id.endsWith(":free") || (m.pricing && +m.pricing.prompt === 0 && +m.pricing.completion === 0))
-          && (m.architecture?.output_modalities || ["text"]).includes("text") && (m.context_length || 0) >= 32000);
+          && (m.architecture?.output_modalities || ["text"]).every((x) => x === "text") // hanya model teks (bukan musik/gambar)
+          && (m.context_length || 0) >= 32000);
       } else {
         list = list.filter((m) => m.active !== false && !/whisper|tts|guard|playai|orpheus|distil|embed|compound/i.test(m.id));
       }

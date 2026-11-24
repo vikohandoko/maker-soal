@@ -1238,7 +1238,7 @@ const SD = { lists: {}, checked: {} };
 const PIDS = ["gemini", "groq", "openrouter"];
 const PROV_INFO = {
   groq: { title: "Groq", note: "Gratis ±1.000 permintaan/hari per model dan sangat cepat, tetapi batas token per menitnya kecil: permintaan yang membawa banyak halaman otomatis dilewati. Paling berguna untuk chat & flashcard.", prefer: /gpt-oss-120b|llama-3\.3-70b|qwen|kimi|gpt-oss-20b/i },
-  openrouter: { title: "OpenRouter (model gratis)", note: "Kuat untuk materi besar, tetapi jatah gratis hanya ±50 permintaan/hari (1.000/hari jika pernah membeli kredit $10). Dipakai paling akhir. Model gratis bisa mencatat isi permintaan — jangan unggah dokumen rahasia.", prefer: /deepseek|qwen|llama-3\.3|gpt-oss|gemma|mistral/i },
+  openrouter: { title: "OpenRouter (model gratis)", note: "Kuat untuk materi besar, tetapi jatah gratis hanya ±50 permintaan/hari (1.000/hari jika pernah membeli kredit $10). Dipakai paling akhir. Model gratis bisa mencatat isi permintaan — jangan unggah dokumen rahasia.", prefer: /^openrouter\/free$|nemotron-3-ultra|gemma-4-31b|deepseek|qwen|llama-3\.3|gpt-oss|nemotron-3\.5-super/i },
 };
 
 function openSettings() {
