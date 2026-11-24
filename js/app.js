@@ -257,7 +257,108 @@ async function render() {
   if (state.view === "doc") return renderDoc();
   if (state.view === "review") return renderReview();
   if (state.view === "images") return renderImgTool();
+  if (state.view === "folder") return renderFolder();
   return renderHome();
+}
+
+// ---------- Folder mata kuliah (mis. "Hukum Adat" berisi Modul 1–6) ----------
+const FOLDER_ICON = `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>`;
+const DOC_ICON = `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M7 3.5h7l4 4v13H7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3.5v4h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>`;
+const byName = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+const modName = (d) => d.modul || d.summary?.judul || d.name;
+
+function docStats(d, now = Date.now()) {
+  const tp = d.topik || [];
+  return {
+    topics: tp.length,
+    mastered: tp.filter((t) => topicStatus({ cards: d.cards || [] }, t) === "dikuasai").length,
+    due: (d.cards || []).filter((c) => c.due <= now).length,
+  };
+}
+function sumStats(docs) {
+  return docs.map((d) => docStats(d)).reduce((a, s) => ({ topics: a.topics + s.topics, mastered: a.mastered + s.mastered, due: a.due + s.due }), { topics: 0, mastered: 0, due: 0 });
+}
+// Gabungkan materi yang punya nama folder (kursus) menjadi satu baris; materi lain tetap sendiri
+function homeItems(docs) {
+  const folders = new Map(), items = [];
+  for (const d of docs) {
+    if (d.kursus) {
+      if (!folders.has(d.kursus)) { const f = { folder: d.kursus, docs: [], latest: 0 }; folders.set(d.kursus, f); items.push(f); }
+      const f = folders.get(d.kursus);
+      f.docs.push(d); f.latest = Math.max(f.latest, d.createdAt);
+    } else items.push({ doc: d, latest: d.createdAt });
+  }
+  return items.sort((a, b) => b.latest - a.latest);
+}
+function folderRow(f) {
+  const s = sumStats(f.docs);
+  return `<div class="doc-item">
+    <span class="row-icon folder">${FOLDER_ICON}</span>
+    <div class="info" data-act="folder" data-name="${esc(f.folder)}">
+      <div class="title">${esc(f.folder)}</div>
+      <div class="small muted">${f.docs.length} modul${s.topics ? ` · ${s.mastered}/${s.topics} topik dikuasai` : ""}${s.due ? ` · <span class="pill accent">${s.due} kartu</span>` : ""}</div>
+      ${s.topics ? `<div class="progress" style="margin-top:6px"><i style="width:${(s.mastered / s.topics) * 100}%"></i></div>` : ""}
+    </div>
+    <button class="btn sm" data-act="folder" data-name="${esc(f.folder)}">Buka</button>
+  </div>`;
+}
+function docRow(d, inFolder = false) {
+  const s = docStats(d);
+  return `<div class="doc-item">
+    <span class="row-icon">${DOC_ICON}</span>
+    <div class="info" data-act="open" data-id="${d.id}">
+      <div class="title">${esc(inFolder ? modName(d) : d.summary?.judul || d.name)}</div>
+      <div class="small muted">${inFolder && d.summary?.judul && d.summary.judul !== modName(d) ? esc(d.summary.judul) + " · " : ""}${fmtDate(d.createdAt)}${s.topics ? ` · ${s.mastered}/${s.topics} topik dikuasai` : ` · ${d.pages.length} bagian`}${s.due ? ` · <span class="pill accent">${s.due} kartu</span>` : ""}</div>
+      ${s.topics ? `<div class="progress" style="margin-top:6px"><i style="width:${(s.mastered / s.topics) * 100}%"></i></div>` : ""}
+    </div>
+    <button class="btn sm" data-act="open" data-id="${d.id}">Buka</button>
+  </div>`;
+}
+
+async function renderFolder() {
+  state.doc = null;
+  const name = state.folder;
+  const docs = (await DB.all()).filter((d) => d.kursus === name).sort((a, b) => byName(modName(a), modName(b)));
+  if (!docs.length) { state.view = "home"; return renderHome(); }
+  const s = sumStats(docs);
+  const ready = docs.filter((d) => (d.topik || []).length).length;
+  app.innerHTML = `<div class="stack">
+    <button class="link small" data-act="home">← Semua materi</button>
+    <div class="spread"><h1 style="margin:0">${esc(name)}</h1><button class="btn sm" data-act="folderRename">Ganti nama</button></div>
+    <section class="card">
+      <div class="spread"><h2 style="margin:0">Kemajuan</h2><b>${s.topics ? `${s.mastered}/${s.topics} topik dikuasai` : `${docs.length} modul`}</b></div>
+      ${s.topics ? `<div class="progress" style="margin:10px 0"><i style="width:${(s.mastered / s.topics) * 100}%"></i></div>` : ""}
+      <p class="small muted">${docs.length} modul · ${ready} sudah punya peta materi${ready < docs.length ? ` · ${docs.length - ready} belum (buka modulnya untuk membuat ringkasan & peta materi)` : ""}.</p>
+      <button class="btn ${s.due ? "primary" : ""} block" data-act="folderReview" ${s.due ? "" : "disabled"}>${s.due ? `Review flashcard semua modul (${s.due} kartu)` : "Tidak ada kartu jatuh tempo"}</button>
+    </section>
+    <h2>Modul</h2>
+    <div class="card list">${docs.map((d) => docRow(d, true)).join("")}</div>
+  </div>`;
+}
+
+function openMoveModal() {
+  const d = state.doc;
+  DB.all().then((all) => {
+    const folders = [...new Set(all.map((x) => x.kursus).filter(Boolean))].sort(byName);
+    openModal(`<h2>Pindahkan ke folder</h2>
+      <label class="field"><span>Folder</span><select id="mvFolder">
+        <option value="">— Tanpa folder —</option>
+        ${folders.map((f) => `<option value="${esc(f)}" ${f === d.kursus ? "selected" : ""}>${esc(f)}</option>`).join("")}
+        <option value="__new">+ Folder baru…</option>
+      </select></label>
+      <label class="field" id="mvNewWrap" hidden><span>Nama folder baru</span><input type="text" id="mvNew" placeholder="Contoh: Hukum Adat"></label>
+      <label class="field"><span>Nama di dalam folder</span><input type="text" id="mvName" value="${esc(d.modul || d.summary?.judul || d.name)}" placeholder="Contoh: Modul 1"></label>
+      <p class="small muted">Modul di dalam folder diurutkan menurut nama ini (Modul 2 sebelum Modul 10).</p>
+      <button class="btn primary" data-act="docMoveSave">Simpan</button>`);
+  });
+}
+function openRenameModal() {
+  openModal(`<h2>Ganti nama folder</h2>
+    <label class="field"><span>Nama folder</span><input type="text" id="fnName" value="${esc(state.folder)}"></label>
+    <button class="btn primary" data-act="folderRenameSave">Simpan</button>
+    <hr style="border:0;border-top:1px solid var(--line);margin:20px 0">
+    <p class="small muted">Bubarkan folder: semua modul tetap tersimpan, hanya dikeluarkan dari folder dan tampil terpisah di beranda.</p>
+    <button class="btn danger" data-act="folderUngroup">Bubarkan folder</button>`);
 }
 
 async function renderHome() {
@@ -292,20 +393,8 @@ async function renderHome() {
 
     <section>
       <h2>Materi tersimpan</h2>
-      ${docs.length ? `<div class="card list">${docs.map((d) => {
-        const dueD = (d.cards || []).filter((c) => c.due <= now).length;
-        const tp = d.topik || [];
-        const mastered = tp.filter((t) => topicStatus({ cards: d.cards || [] }, t) === "dikuasai").length;
-        return `<div class="doc-item">
-          <div class="info" data-act="open" data-id="${d.id}">
-            <div class="title">${esc(d.summary?.judul || d.name)}</div>
-            <div class="small muted">${fmtDate(d.createdAt)}${tp.length ? ` · ${mastered}/${tp.length} topik dikuasai` : ` · ${d.pages.length} bagian`}
-              ${dueD ? ` · <span class="pill accent">${dueD} kartu</span>` : ""}</div>
-            ${tp.length ? `<div class="progress" style="margin-top:6px"><i style="width:${(mastered / tp.length) * 100}%"></i></div>` : ""}
-          </div>
-          <button class="btn sm" data-act="open" data-id="${d.id}">Buka</button>
-        </div>`;
-      }).join("")}</div>` : `<p class="muted">Belum ada materi. Unggah file pertamamu di atas.</p>`}
+      ${docs.length ? `<div class="card list">${homeItems(docs).map((it) => it.folder ? folderRow(it) : docRow(it.doc)).join("")}</div>`
+        : `<p class="muted">Belum ada materi. Unggah file pertamamu di atas.</p>`}
     </section>
 
     ${AI.settings.key ? `<section class="card">
@@ -377,7 +466,8 @@ function renderDoc() {
   const body = { belajar: tabLearn, ringkasan: tabSummary, soal: tabQuiz, flashcard: tabCards, tanya: tabChat, feynman: tabFeynman }[state.tab]();
   app.innerHTML = `
     <div class="spread" style="margin-bottom:4px">
-      <button class="link small" data-act="home">← Semua materi</button>
+      ${d.kursus ? `<button class="link small" data-act="folder" data-name="${esc(d.kursus)}">← ${esc(d.kursus)}</button>`
+        : `<button class="link small" data-act="home">← Semua materi</button>`}
       <button class="link small" data-act="viewText">Teks hasil baca file</button>
     </div>
     <h1>${esc(d.summary?.judul || d.name)}</h1>
@@ -386,7 +476,8 @@ function renderDoc() {
     ${d.method === "ocr" ? `<p class="small muted">Tips: hasil OCR bisa keliru membaca tulisan. Cek lewat "Teks hasil baca file".</p>` : ""}
     <nav class="tabs" role="tablist">${TABS.map(([k, l]) => `<button class="tab" role="tab" aria-selected="${state.tab === k}" data-act="tab" data-tab="${k}">${l}</button>`).join("")}</nav>
     <div class="stack" style="margin-top:8px">${body}</div>
-    ${state.tab === "ringkasan" ? `<p style="margin-top:32px"><button class="link small" style="color:var(--bad)" data-act="docDelete">Hapus materi ini</button></p>` : ""}`;
+    ${state.tab === "ringkasan" ? `<p class="row" style="margin-top:32px;gap:20px"><button class="link small" data-act="docMove">${d.kursus ? "Pindahkan / ganti nama di folder" : "Pindahkan ke folder"}</button>
+      <button class="link small" style="color:var(--bad)" data-act="docDelete">Hapus materi ini</button></p>` : ""}`;
   if (state.tab === "tanya") afterChatRender();
 }
 
@@ -946,8 +1037,8 @@ function tabCards() {
     </details>` : ""}`;
 }
 
-async function startReview(docId, topikId) {
-  const docs = docId ? [state.doc] : await DB.all();
+async function startReview(docId, topikId, folder) {
+  const docs = docId ? [state.doc] : (await DB.all()).filter((d) => !folder || d.kursus === folder);
   const now = Date.now();
   const map = {}, queue = [];
   for (const d of docs) {
@@ -957,7 +1048,7 @@ async function startReview(docId, topikId) {
     }
   }
   if (!queue.length) return toast(topikId ? "Semua kartu topik ini sudah dihafal. Kartu akan muncul lagi sesuai jadwal." : "Tidak ada kartu yang jatuh tempo.");
-  state.review = { docs: map, queue: shuffle(queue), idx: 0, flipped: false, done: 0, fromDoc: docId, fromTopic: topikId, fromTab: state.tab };
+  state.review = { docs: map, queue: shuffle(queue), idx: 0, flipped: false, done: 0, fromDoc: docId, fromTopic: topikId, fromTab: state.tab, fromFolder: folder };
   state.view = "review";
   render();
 }
@@ -1333,10 +1424,44 @@ const actions = {
   flip: () => { if (!state.review.flipped) { state.review.flipped = true; renderReview(); } },
   grade: (el) => grade(+el.dataset.q),
   reviewExit: async () => {
-    const { fromDoc, fromTopic, fromTab } = state.review;
+    const { fromDoc, fromTopic, fromTab, fromFolder } = state.review;
     state.review = null;
     if (fromDoc) await openDoc(fromDoc, { tab: fromTab, topicId: fromTopic });
+    else if (fromFolder) { state.view = "folder"; state.folder = fromFolder; render(); }
     else { state.view = "home"; render(); }
+  },
+
+  // Folder
+  folder: (el) => { state.view = "folder"; state.folder = el.dataset.name; render(); },
+  folderReview: () => startReview(null, null, state.folder),
+  folderRename: openRenameModal,
+  folderRenameSave: async () => {
+    const neu = document.getElementById("fnName").value.trim();
+    if (!neu) return toast("Nama folder tidak boleh kosong.", "err");
+    const old = state.folder;
+    for (const d of (await DB.all()).filter((x) => x.kursus === old)) {
+      d.kursus = neu;
+      if (d.name.startsWith(old + " – ")) d.name = neu + d.name.slice(old.length);
+      await DB.put(d);
+    }
+    state.folder = neu; closeModal(); render();
+    toast(`Folder diganti nama menjadi "${neu}".`);
+  },
+  folderUngroup: async () => {
+    if (!confirm(`Bubarkan folder "${state.folder}"? Semua modul tetap tersimpan dan akan tampil terpisah di beranda.`)) return;
+    for (const d of (await DB.all()).filter((x) => x.kursus === state.folder)) { delete d.kursus; await DB.put(d); }
+    closeModal(); state.view = "home"; render();
+  },
+  docMove: openMoveModal,
+  docMoveSave: async () => {
+    const d = state.doc;
+    let f = document.getElementById("mvFolder").value;
+    if (f === "__new") f = document.getElementById("mvNew").value.trim();
+    if (document.getElementById("mvFolder").value === "__new" && !f) return toast("Isi nama folder baru.", "err");
+    const nm = document.getElementById("mvName").value.trim();
+    if (f) { d.kursus = f; if (nm) d.modul = nm; } else delete d.kursus;
+    await save(); closeModal(); renderDoc();
+    toast(f ? `Dipindahkan ke folder "${f}".` : "Dikeluarkan dari folder.");
   },
 
   // Chat & Feynman
@@ -1346,7 +1471,10 @@ const actions = {
   feySubmit: submitFeynman,
   docDelete: async () => {
     if (!confirm(`Hapus materi "${state.doc.name}" beserta semua soal, kartu, dan percakapannya? Tindakan ini tidak bisa dibatalkan.`)) return;
-    await DB.del(state.doc.id); state.view = "home"; render();
+    const k = state.doc.kursus;
+    await DB.del(state.doc.id);
+    if (k) { state.view = "folder"; state.folder = k; } else state.view = "home";
+    render();
   },
 };
 document.addEventListener("click", (e) => {
@@ -1357,6 +1485,7 @@ document.addEventListener("click", (e) => {
 });
 document.addEventListener("change", (e) => {
   if (e.target.id === "quizSel") { state.quizId = e.target.value; state.answers = {}; state.revealAll = false; renderDoc(); }
+  if (e.target.id === "mvFolder") document.getElementById("mvNewWrap").hidden = e.target.value !== "__new";
   if (e.target.matches("[data-scope]")) {
     const r = document.getElementById(e.target.id + "Range");
     if (r) r.hidden = e.target.value !== "range";

@@ -220,6 +220,9 @@ details > summary { cursor: pointer; font-weight: 600; min-height: 32px; }
 .stack-sm > * + * { margin-top: 8px; }
 .finish { border-color: var(--accent); }
 
+.row-icon { flex: none; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--surface-2); color: var(--muted); }
+.row-icon.folder { background: var(--accent-soft); color: var(--accent); }
+
 /* ---------- Belajar bertahap ---------- */
 .topic-row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; cursor: pointer; }
 .topic-row + .topic-row { border-top: 1px solid var(--line); }
