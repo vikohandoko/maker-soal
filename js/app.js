@@ -257,7 +257,7 @@ async function render() {
   if (state.view === "doc") return renderDoc();
   if (state.view === "review") return renderReview();
   if (state.view === "images") return renderImgTool();
-  if (state.view !== "exam") stopExamTimer();
+  if (state.view !== "exam" && typeof stopExamTimer === "function") stopExamTimer();
   if (state.view === "folder") return renderFolder();
   if (state.view === "exam") return renderExam();
   return renderHome();
@@ -1504,4 +1504,6 @@ document.addEventListener("change", (e) => {
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
 
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) navigator.serviceWorker.register("sw.js").catch(() => {});
-render();
+// Tampilan awal dibuat setelah SEMUA skrip (imgtool.js, exam.js) selesai dimuat
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => render());
+else render();
