@@ -276,6 +276,27 @@ ${hindari.map((h) => "- " + h.slice(0, 160)).join("\n")}` : ""}`),
       });
     },
 
+    // Simulasi ujian: MATERI berisi beberapa modul (label "[Modul X · Halaman N]"), jumlah soal ditentukan per modul
+    async exam(doc, dist, { tingkat, jenis }, hindari = [], onStatus) {
+      const nama = { pilihan_ganda: "pilihan ganda (4 opsi)", isian: "isian singkat" };
+      const names = dist.map((d) => d.name);
+      return call({
+        onStatus, system: RULES, temperature: 0.4,
+        contents: userTurn(doc, `MATERI di atas berisi beberapa MODUL; setiap bagian diberi label "[<nama modul> · <lokasi>]".
+Buat soal SIMULASI UJIAN akhir semester dengan pembagian TEPAT seperti ini:
+${dist.map((d) => `- ${d.name}: ${d.k} soal`).join("\n")}
+Tingkat kesulitan: ${tingkat}. Jenis soal: ${jenis.map((j) => nama[j]).join(", ")}${jenis.length > 1 ? " (utamakan pilihan ganda, sekitar 70%)" : ""}.
+Ketentuan:
+- Setiap soal hanya boleh memakai isi modul yang disebut di "modul" (isi persis salah satu: ${names.map((n) => `"${n}"`).join(", ")}).
+- Sebar soal ke berbagai bagian setiap modul; tanyakan konsep penting, bukan detail remeh.
+- Gaya soal seperti ujian universitas: jelas, tidak ambigu, pengecoh masuk akal.
+${SOAL_RULES}${hindari.length ? `
+- WAJIB BARU: JANGAN membuat soal yang sama/mirip dengan soal yang pernah keluar berikut:
+${hindari.map((h) => "- " + h.slice(0, 140)).join("\n")}` : ""}`),
+        schema: obj({ soal: arr(obj({ ...SOAL.properties, modul: S("STRING", { enum: names }) })) }),
+      });
+    },
+
     // Pemeriksaan ulang: AI memeriksa setiap soal terhadap materi.
     async verifyQuiz(doc, soal, onStatus) {
       const list = soal.map((s, i) => ({

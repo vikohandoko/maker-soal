@@ -43,13 +43,13 @@ const keepScroll = (fn) => { const y = scrollY; fn(); scrollTo(0, y); };
 async function save() { if (state.doc) await DB.put(state.doc); }
 
 // Lencana sumber: hijau = kutipan persis ada di file, kuning = hampir sama, merah = tidak ditemukan
-function cite(c, quote) {
+function cite(c, quote, docId) {
   if (!c) return "";
   const cls = { ok: "ok", mirip: "warn", tidak: "bad" }[c.status];
   const txt = c.status === "ok" ? `Sumber terverifikasi · ${c.label}`
     : c.status === "mirip" ? `Hampir sama dengan isi ${c.label}`
     : "Kutipan tidak ditemukan di file — cek manual";
-  return `<button class="cite ${cls}" data-act="source" data-label="${esc(c.label || "")}" data-quote="${esc(quote)}">${esc(txt)}</button>`;
+  return `<button class="cite ${cls}" data-act="source" data-label="${esc(c.label || "")}" data-quote="${esc(quote)}"${docId ? ` data-doc="${docId}"` : ""}>${esc(txt)}</button>`;
 }
 // Ubah "(Halaman 3)" menjadi tombol yang membuka halaman asli
 function linkRefs(html) {
@@ -58,8 +58,8 @@ function linkRefs(html) {
     return `<button class="ref" data-act="source" data-label="${esc(first)}">${esc(inner)}</button>`;
   });
 }
-function showSource(label, quote) {
-  const doc = state.doc || (state.review && state.review.docs[state.review.queue[state.review.idx]?.docId]);
+function showSource(label, quote, docId) {
+  const doc = (docId && state.examDocs?.[docId]) || state.doc || (state.review && state.review.docs[state.review.queue[state.review.idx]?.docId]);
   const page = doc?.pages.find((p) => p.label === label) || doc?.pages.find((p) => p.label.endsWith(label));
   let body = esc(page ? page.text : "");
   if (page && quote) {
@@ -257,7 +257,9 @@ async function render() {
   if (state.view === "doc") return renderDoc();
   if (state.view === "review") return renderReview();
   if (state.view === "images") return renderImgTool();
+  if (state.view !== "exam") stopExamTimer();
   if (state.view === "folder") return renderFolder();
+  if (state.view === "exam") return renderExam();
   return renderHome();
 }
 
@@ -331,6 +333,7 @@ async function renderFolder() {
       <p class="small muted">${docs.length} modul · ${ready} sudah punya peta materi${ready < docs.length ? ` · ${docs.length - ready} belum (buka modulnya untuk membuat ringkasan & peta materi)` : ""}.</p>
       <button class="btn ${s.due ? "primary" : ""} block" data-act="folderReview" ${s.due ? "" : "disabled"}>${s.due ? `Review flashcard semua modul (${s.due} kartu)` : "Tidak ada kartu jatuh tempo"}</button>
     </section>
+    ${await examCard(name, docs)}
     <h2>Modul</h2>
     <div class="card list">${docs.map((d) => docRow(d, true)).join("")}</div>
   </div>`;
@@ -677,9 +680,9 @@ function normalizeSoal(s) {
 }
 
 // Rapikan soal → (opsional) periksa ulang oleh AI → cek kutipan di file
-async function processSoal(src, raw, status, verify) {
+async function processSoal(src, raw, status, verify, locate = (s) => locateQuote(s.kutipan, state.doc.pages)) {
   raw = raw || [];
-  let soal = raw.map(normalizeSoal).filter(Boolean);
+  let soal = raw.map((r) => { const s = normalizeSoal(r); if (s && r.modul) s.modul = r.modul; return s; }).filter(Boolean);
   const info = { dibuat: raw.length, formatRusak: raw.length - soal.length, diperbaiki: 0, dibuang: 0, diperiksa: verify };
   if (!soal.length) throw new Error("AI tidak menghasilkan soal yang valid. Coba lagi.");
   if (verify) {
@@ -706,7 +709,7 @@ async function processSoal(src, raw, status, verify) {
     soal = keep;
   }
   if (!soal.length) throw new Error("Semua soal gagal lolos pemeriksaan. Coba buat ulang.");
-  soal.forEach((s) => (s.cek = locateQuote(s.kutipan, state.doc.pages)));
+  soal.forEach((s) => (s.cek = locate(s)));
   soal.sort((a, b) => (a.cek.status === "tidak") - (b.cek.status === "tidak"));
   return { soal, info };
 }
@@ -1268,7 +1271,8 @@ async function saveSettings() {
 // ---------- Cadangan ----------
 async function exportData() {
   const docs = await DB.all();
-  const blob = new Blob([JSON.stringify({ app: "maker-soal", version: 2, exportedAt: Date.now(), docs })], { type: "application/json" });
+  const exams = await DB.exams.all();
+  const blob = new Blob([JSON.stringify({ app: "maker-soal", version: 3, exportedAt: Date.now(), docs, exams })], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = `maker-soal-cadangan-${new Date().toISOString().slice(0, 10)}.json`;
@@ -1285,6 +1289,7 @@ async function importData(file) {
       Object.assign(d, { topik: d.topik || [], quizzes: d.quizzes || [], cards: d.cards || [], chat: d.chat || [], feynman: d.feynman || [] });
       await DB.put(d);
     }
+    for (const e of (data.exams || []).filter((e) => e && e.id && Array.isArray(e.soal))) await DB.exams.put(e);
     toast(`${docs.length} materi diimpor.`);
     renderHome();
   });
@@ -1313,7 +1318,7 @@ const actions = {
   export: exportData,
   tab: (el) => { state.tab = el.dataset.tab; if (el.dataset.tab === "belajar") state.topicId = null; renderDoc(); },
   viewText,
-  source: (el) => showSource(el.dataset.label, el.dataset.quote),
+  source: (el) => showSource(el.dataset.label, el.dataset.quote, el.dataset.doc),
   srcView: (el) => {
     document.querySelectorAll(".seg-btn").forEach((b) => b.setAttribute("aria-selected", b === el));
     document.getElementById("srcPaneImg").hidden = el.dataset.v !== "img";
@@ -1444,6 +1449,7 @@ const actions = {
       if (d.name.startsWith(old + " – ")) d.name = neu + d.name.slice(old.length);
       await DB.put(d);
     }
+    for (const e of (await DB.exams.all()).filter((x) => x.kursus === old)) { e.kursus = neu; await DB.exams.put(e); }
     state.folder = neu; closeModal(); render();
     toast(`Folder diganti nama menjadi "${neu}".`);
   },

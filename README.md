@@ -17,6 +17,11 @@ Aplikasi belajar pribadi: unggah materi (PDF, Word, TXT, atau foto catatan), lal
    - menyimpan tiap modul sebagai materi belajar.
 
    Jika kuota habis di tengah jalan, pilih folder yang sama besok, dan modul yang sudah selesai akan dilewati otomatis.
+9. **Folder mata kuliah & Simulasi Ujian**: modul satu mata kuliah dikelompokkan dalam satu folder. Dari halaman folder bisa dibuat simulasi ujian:
+   - soal campuran dari modul pilihan, dibagi rata per modul,
+   - kunci jawaban baru terlihat setelah selesai, dengan pengatur waktu opsional,
+   - nilai dirinci per modul, dengan tombol langsung ke modul yang perlu diulang,
+   - latih ulang soal yang salah atau acak ulang tanpa kuota.
 
 ## Hemat kuota gratis
 
