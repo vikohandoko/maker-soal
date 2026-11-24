@@ -86,7 +86,7 @@ Buka http://localhost:8080 di browser.
 
 ## Batasan
 
-- **Modul panjang (ratusan halaman) didukung penuh.** Semua halaman disimpan. Ringkasan dan peta materi dibuat per bagian (±130–200 ribu karakter per bagian) lalu digabung. Contoh: modul 200 halaman ≈ 3–4 panggilan AI saat diunggah.
+- **Modul panjang (ratusan halaman) didukung penuh.** Semua halaman disimpan. Ringkasan dan peta materi dibuat per bagian (±130–200 ribu karakter per bagian) lalu digabung. Contoh: modul 200 halaman ≈ 3–4 panggilan AI saat diunggah. Satu modul UT dipecah menjadi ±6–8 topik; membuka satu topik sekaligus menyiapkan 2 topik berikutnya (±2 panggilan AI per 3 topik, sudah termasuk pemeriksaan ulang soal).
 - Untuk modul panjang:
   - Soal dan flashcard bisa diambil dari **seluruh materi** (dipilih otomatis dan tersebar, diutamakan bagian yang belum tercakup), **satu topik**, atau **rentang halaman**.
   - Chat dan uji pemahaman hanya mengirim **halaman yang paling relevan** dengan pertanyaan, jadi tetap hemat kuota.

@@ -148,7 +148,7 @@ function pagesFor(doc, labels) {
   return { pages: samplePages(pages.length ? pages : doc.pages, CHUNK_CHARS, usedLabels(doc)) };
 }
 const isLong = (doc) => docChars(doc.pages) > CHUNK_CHARS;
-const nTopics = (chars, long) => Math.max(3, Math.min(15, Math.round(chars / (long ? 12000 : 4000))));
+const nTopics = (chars) => Math.max(3, Math.min(12, Math.round(chars / 12000))); // ±6–8 topik per modul UT
 function rangeText(pages) {
   return pages.length === 1 ? pages[0].label : `${pages[0].label} – ${pages[pages.length - 1].label}`;
 }
@@ -561,7 +561,7 @@ function renderTopic(t) {
   if (!t.paket) return head + `<section class="card">
     <p>Aplikasi akan membuat penjelasan, flashcard, dan soal khusus untuk topik ini, hanya dari ${t.lokasi.length ? esc(t.lokasi.join(", ")) : "materi"}.</p>
     <button class="btn primary block" data-act="topicStart">Mulai pelajari topik ini</button>
-    <p style="text-align:center;margin:8px 0 0">${calls(AI.settings.verify ? 2 : 1)}</p></section>` + nav;
+    <p class="small muted" style="text-align:center;margin:8px 0 0">${(() => { const n = topicBatch(d, t).length; return `Memakai ±${AI.settings.verify ? 2 : 1} panggilan AI${n > 1 ? ` untuk topik ini + ${n - 1} topik berikutnya sekaligus` : ""}.`; })()}</p></section>` + nav;
 
   const p = t.paket;
   const cards = d.cards.filter((c) => c.topikId === t.id);
@@ -584,7 +584,8 @@ function renderTopic(t) {
     <section class="card"><h3 class="step"><span>3</span> Uji diri</h3>
       <p class="small muted">Jawab semua soal. Untuk soal isian, lihat kunci lalu nilai sendiri jawabanmu.${t.skor != null ? ` Skor terakhir: <b>${t.skor}</b> (${t.percobaan}× mencoba).` : ""}</p>
     </section>
-    ${p.soal.map((s, k) => renderQ(s, k, "topic")).join("")}
+    ${p.soal.length ? p.soal.map((s, k) => renderQ(s, k, "topic")).join("")
+      : `<div class="card small muted">Belum ada soal yang lolos pemeriksaan untuk topik ini. Klik "Soal baru (AI)" di bawah.</div>`}
     <div class="card spread">
       <span>${sc.answered}/${sc.total} dijawab · benar ${sc.correct}</span>
       <div class="row"><button class="btn sm" data-act="topicRetry">Acak &amp; ulangi</button>
@@ -597,25 +598,56 @@ function renderTopic(t) {
     </section>` + nav;
 }
 
-async function startTopic(t) {
+const TOPIC_BATCH = 3; // 1 panggilan menyiapkan hingga 3 topik + 1 pemeriksaan bersama
+
+// Topik yang ikut disiapkan bersama t: t + topik berikutnya yang belum disiapkan (urut alur materi)
+function topicBatch(d, t) {
+  const i = d.topik.indexOf(t);
+  const rest = [...d.topik.slice(i + 1), ...d.topik.slice(0, i)].filter((x) => !x.paket);
+  return [t, ...rest.slice(0, TOPIC_BATCH - 1)];
+}
+
+async function startTopic(t, single = false) {
   const d = state.doc;
-  await run(`Menyiapkan topik "${t.judul}"…`, async (status) => {
-    const sub = pagesFor(d, t.lokasi);
-    const r = await AI.topicPack(sub, t, status);
-    const { soal } = await processSoal(sub, r.soal, status, AI.settings.verify);
+  const batch = single ? [t] : topicBatch(d, t);
+  await run(batch.length > 1 ? `Menyiapkan topik "${t.judul}" + ${batch.length - 1} topik berikutnya…` : `Menyiapkan topik "${t.judul}"…`, async (status) => {
+    const sub = pagesFor(d, [...new Set(batch.flatMap((x) => x.lokasi))]);
+    let r;
+    try { r = await AI.topicPacks(sub, batch, status); }
+    catch (e) {
+      // Jawaban terlalu panjang untuk beberapa topik → ulangi untuk topik ini saja
+      if (batch.length > 1 && /terpotong/.test(e.message)) { status("Jawaban terlalu panjang — menyiapkan topik ini saja…"); r = await AI.topicPacks(pagesFor(d, t.lokasi), [t], status); batch.length = 1; }
+      else throw e;
+    }
+    const packs = r.paket || [];
+    const packFor = (i) => packs.find((p) => p.nomor === i + 1) || packs[i];
+    // Gabungkan soal semua topik → satu pemeriksaan ulang → kembalikan ke topiknya masing-masing
+    const raw = batch.flatMap((_, i) => (packFor(i)?.soal || []).map((s) => ({ ...s, _t: i })));
+    let soal = [];
+    try { soal = (await processSoal(sub, raw, status, AI.settings.verify)).soal; }
+    catch (e) { if (!/tidak menghasilkan soal|gagal lolos/.test(e.message)) throw e; }
     const now = Date.now();
-    const kartu = (r.kartu || []).filter((k) => k.depan && k.belakang).map((k) => ({
-      id: uid(), topikId: t.id, depan: k.depan, belakang: k.belakang, kutipan: k.kutipan,
-      cek: locateQuote(k.kutipan, d.pages), ef: 2.5, interval: 0, reps: 0, lapses: 0, due: now,
-    })).filter((k) => k.cek.status !== "tidak");
-    d.cards.push(...kartu);
-    t.paket = {
-      penjelasan: r.penjelasan, createdAt: now, soal,
-      poin: (r.poin_kunci || []).map((x) => ({ ...x, cek: locateQuote(x.kutipan, d.pages) })),
-    };
+    let ready = 0;
+    batch.forEach((tp, i) => {
+      const p = packFor(i);
+      if (!p?.penjelasan) return;
+      const kartu = (p.kartu || []).filter((k) => k.depan && k.belakang).map((k) => ({
+        id: uid(), topikId: tp.id, depan: k.depan, belakang: k.belakang, kutipan: k.kutipan,
+        cek: locateQuote(k.kutipan, d.pages), ef: 2.5, interval: 0, reps: 0, lapses: 0, due: now,
+      })).filter((k) => k.cek.status !== "tidak");
+      d.cards.push(...kartu);
+      tp.paket = {
+        penjelasan: p.penjelasan, createdAt: now,
+        soal: soal.filter((s) => s._t === i).map((s) => { delete s._t; return s; }),
+        poin: (p.poin_kunci || []).map((x) => ({ ...x, cek: locateQuote(x.kutipan, d.pages) })),
+      };
+      ready++;
+    });
+    if (!t.paket) throw new Error("AI tidak berhasil menyiapkan topik ini. Coba lagi.");
     state.tAnswers = {};
     await save();
     renderDoc();
+    if (ready > 1) toast(`Topik ini siap. ${ready - 1} topik berikutnya juga sudah disiapkan — tidak perlu panggilan AI lagi saat dibuka.`);
   });
 }
 
@@ -635,7 +667,7 @@ function checkTopicDone() {
   const t = state.doc.topik.find((x) => x.id === state.topicId);
   if (!t?.paket) return;
   const sc = scoreOf(t.paket.soal, state.tAnswers);
-  if (sc.answered < sc.total || state.tAnswers._recorded) return;
+  if (!sc.total || sc.answered < sc.total || state.tAnswers._recorded) return;
   state.tAnswers._recorded = true;
   t.skor = Math.round((sc.correct / sc.total) * 100);
   t.percobaan = (t.percobaan || 0) + 1;
@@ -682,7 +714,7 @@ function normalizeSoal(s) {
 // Rapikan soal → (opsional) periksa ulang oleh AI → cek kutipan di file
 async function processSoal(src, raw, status, verify, locate = (s) => locateQuote(s.kutipan, state.doc.pages)) {
   raw = raw || [];
-  let soal = raw.map((r) => { const s = normalizeSoal(r); if (s && r.modul) s.modul = r.modul; return s; }).filter(Boolean);
+  let soal = raw.map((r) => { const s = normalizeSoal(r); if (s && r.modul) s.modul = r.modul; if (s && r._t != null) s._t = r._t; return s; }).filter(Boolean);
   const info = { dibuat: raw.length, formatRusak: raw.length - soal.length, diperbaiki: 0, dibuang: 0, diperiksa: verify };
   if (!soal.length) throw new Error("AI tidak menghasilkan soal yang valid. Coba lagi.");
   if (verify) {

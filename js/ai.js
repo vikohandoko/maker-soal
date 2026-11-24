@@ -246,17 +246,26 @@ Gabungkan menjadi SATU ringkasan utuh, panjang ${PANJANG[detail] || PANJANG.deta
     },
 
     // Satu panggilan per topik: penjelasan + poin kunci + kartu + soal
-    async topicPack(subDoc, topik, onStatus) {
+    // Paket belajar untuk 1–3 topik sekaligus (hemat kuota): penjelasan + poin kunci + kartu + soal per topik
+    async topicPacks(subDoc, topics, onStatus) {
+      const multi = topics.length > 1;
       return call({
         onStatus, system: RULES, temperature: 0.3,
-        contents: userTurn(subDoc, `Fokus HANYA pada topik: "${topik.judul}" — ${topik.deskripsi || ""}
-Buat paket belajar:
-- "penjelasan": penjelasan lengkap topik ini dalam Markdown (sub-judul ###, poin-poin, contoh dari materi bila ada). Tulis rujukan lokasi dalam kurung, contoh "(Halaman 3)". Jika materi topik ini memuat TABEL, sajikan ulang sebagai tabel Markdown (isi sesuai materi). Jika ada DIAGRAM (ditandai [diagram: ...]), jelaskan alur/hubungannya dengan jelas, boleh memakai panah (A → B → C).
-- "poin_kunci": 3–6 poin terpenting topik ini, masing-masing dengan "kutipan" persis.
-- "kartu": 4–8 flashcard. ${KARTU_RULES}
-- "soal": tepat 4 soal (3 pilihan_ganda + 1 isian) tentang topik ini.
-${SOAL_RULES}`),
-        schema: obj({ penjelasan: STR, poin_kunci: arr(obj({ poin: STR, kutipan: STR })), kartu: arr(KARTU), soal: arr(SOAL) }),
+        contents: userTurn(subDoc, `Buat paket belajar untuk ${multi ? `${topics.length} topik berikut, MASING-MASING terpisah` : "topik berikut"}:
+${topics.map((t, i) => `${i + 1}. "${t.judul}" — ${t.deskripsi || ""}${t.lokasi?.length ? ` (lokasi: ${t.lokasi.join(", ")})` : ""}`).join("\n")}
+
+Untuk SETIAP topik buat satu objek di "paket" dengan "nomor" sesuai daftar di atas, berisi:
+- "penjelasan": penjelasan lengkap topik itu dalam Markdown (sub-judul ###, poin-poin, contoh dari materi bila ada). Tulis rujukan lokasi dalam kurung, contoh "(Halaman 3)". Jika materi topik memuat TABEL, sajikan ulang sebagai tabel Markdown (isi sesuai materi). Jika ada DIAGRAM (ditandai [diagram: ...]), jelaskan alur/hubungannya dengan jelas, boleh memakai panah (A → B → C).
+- "poin_kunci": 3–6 poin terpenting topik itu, masing-masing dengan "kutipan" persis.
+- "kartu": 4–6 flashcard. ${KARTU_RULES}
+- "soal": tepat 4 soal (3 pilihan_ganda + 1 isian) tentang topik itu saja.
+${multi ? "Jangan mencampur isi antar-topik; setiap paket hanya membahas topiknya sendiri.\n" : ""}${SOAL_RULES}`),
+        schema: obj({
+          paket: arr(obj({
+            nomor: S("INTEGER"), penjelasan: STR,
+            poin_kunci: arr(obj({ poin: STR, kutipan: STR })), kartu: arr(KARTU), soal: arr(SOAL),
+          })),
+        }),
       });
     },
 
