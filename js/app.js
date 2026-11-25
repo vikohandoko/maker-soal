@@ -298,7 +298,7 @@ function folderRow(f) {
     <span class="row-icon folder">${FOLDER_ICON}</span>
     <div class="info" data-act="folder" data-name="${esc(f.folder)}">
       <div class="title">${esc(f.folder)}</div>
-      <div class="small muted">${f.docs.length} modul${s.topics ? ` · ${s.mastered}/${s.topics} topik dikuasai` : ""}${s.due ? ` · <span class="pill accent">${s.due} kartu</span>` : ""}</div>
+      <div class="small muted">${f.docs.length} modul${s.topics ? ` · ${s.mastered}/${s.topics} topik dikuasai` : ""}${state.prep?.kursus === f.folder && state.prep.phase === "running" ? ` · <span class="pill accent">sedang disiapkan…</span>` : ""}${s.due ? ` · <span class="pill accent">${s.due} kartu</span>` : ""}</div>
       ${s.topics ? `<div class="progress" style="margin-top:6px"><i style="width:${(s.mastered / s.topics) * 100}%"></i></div>` : ""}
     </div>
     <button class="btn sm" data-act="folder" data-name="${esc(f.folder)}">Buka</button>
@@ -330,9 +330,10 @@ async function renderFolder() {
     <section class="card">
       <div class="spread"><h2 style="margin:0">Kemajuan</h2><b>${s.topics ? `${s.mastered}/${s.topics} topik dikuasai` : `${docs.length} modul`}</b></div>
       ${s.topics ? `<div class="progress" style="margin:10px 0"><i style="width:${(s.mastered / s.topics) * 100}%"></i></div>` : ""}
-      <p class="small muted">${docs.length} modul · ${ready} sudah punya peta materi${ready < docs.length ? ` · ${docs.length - ready} belum (buka modulnya untuk membuat ringkasan & peta materi)` : ""}.</p>
+      <p class="small muted">${docs.length} modul · ${ready} sudah punya peta materi${ready < docs.length ? ` · ${docs.length - ready} belum` : ""}.</p>
       <button class="btn ${s.due ? "primary" : ""} block" data-act="folderReview" ${s.due ? "" : "disabled"}>${s.due ? `Review flashcard semua modul (${s.due} kartu)` : "Tidak ada kartu jatuh tempo"}</button>
     </section>
+    ${typeof prepCard === "function" ? prepCard(name, docs) : ""}
     ${await examCard(name, docs)}
     <h2>Modul</h2>
     <div class="card list">${docs.map((d) => docRow(d, true)).join("")}</div>
@@ -607,42 +608,59 @@ function topicBatch(d, t) {
   return [t, ...rest.slice(0, TOPIC_BATCH - 1)];
 }
 
+// Buat paket (penjelasan, kartu, soal) untuk beberapa topik dalam 1 panggilan + 1 pemeriksaan.
+// Tidak mengubah doc: hasilnya diterapkan dengan applyPacks (dipakai juga oleh "Siapkan semua modul").
+async function prepareTopics(d, batch, status) {
+  const sub = pagesFor(d, [...new Set(batch.flatMap((x) => x.lokasi))]);
+  let r;
+  try { r = await AI.topicPacks(sub, batch, status); }
+  catch (e) {
+    // Jawaban terlalu panjang untuk beberapa topik → ulangi untuk topik pertama saja
+    if (batch.length > 1 && /terpotong/.test(e.message)) { status("Jawaban terlalu panjang — menyiapkan satu topik saja…"); r = await AI.topicPacks(pagesFor(d, batch[0].lokasi), [batch[0]], status); batch = [batch[0]]; }
+    else throw e;
+  }
+  const packs = r.paket || [];
+  const packFor = (i) => packs.find((p) => p.nomor === i + 1) || packs[i];
+  // Gabungkan soal semua topik → satu pemeriksaan ulang → kembalikan ke topiknya masing-masing
+  const raw = batch.flatMap((_, i) => (packFor(i)?.soal || []).map((s) => ({ ...s, _t: i })));
+  let soal = [];
+  try { soal = (await processSoal(sub, raw, status, AI.settings.verify, (s) => locateQuote(s.kutipan, d.pages))).soal; }
+  catch (e) { if (!/tidak menghasilkan soal|gagal lolos/.test(e.message)) throw e; }
+  const now = Date.now();
+  return batch.map((tp, i) => {
+    const p = packFor(i);
+    if (!p?.penjelasan) return null;
+    return {
+      topikId: tp.id,
+      kartu: (p.kartu || []).filter((k) => k.depan && k.belakang).map((k) => ({
+        id: uid(), topikId: tp.id, depan: k.depan, belakang: k.belakang, kutipan: k.kutipan,
+        cek: locateQuote(k.kutipan, d.pages), ef: 2.5, interval: 0, reps: 0, lapses: 0, due: now,
+      })).filter((k) => k.cek.status !== "tidak"),
+      paket: {
+        penjelasan: p.penjelasan, createdAt: now,
+        soal: soal.filter((s) => s._t === i).map((s) => { delete s._t; return s; }),
+        poin: (p.poin_kunci || []).map((x) => ({ ...x, cek: locateQuote(x.kutipan, d.pages) })),
+      },
+    };
+  }).filter(Boolean);
+}
+function applyPacks(doc, res) {
+  let n = 0;
+  for (const r of res) {
+    const tp = doc.topik.find((x) => x.id === r.topikId);
+    if (!tp || tp.paket) continue;
+    tp.paket = r.paket;
+    doc.cards.push(...r.kartu);
+    n++;
+  }
+  return n;
+}
+
 async function startTopic(t, single = false) {
   const d = state.doc;
   const batch = single ? [t] : topicBatch(d, t);
   await run(batch.length > 1 ? `Menyiapkan topik "${t.judul}" + ${batch.length - 1} topik berikutnya…` : `Menyiapkan topik "${t.judul}"…`, async (status) => {
-    const sub = pagesFor(d, [...new Set(batch.flatMap((x) => x.lokasi))]);
-    let r;
-    try { r = await AI.topicPacks(sub, batch, status); }
-    catch (e) {
-      // Jawaban terlalu panjang untuk beberapa topik → ulangi untuk topik ini saja
-      if (batch.length > 1 && /terpotong/.test(e.message)) { status("Jawaban terlalu panjang — menyiapkan topik ini saja…"); r = await AI.topicPacks(pagesFor(d, t.lokasi), [t], status); batch.length = 1; }
-      else throw e;
-    }
-    const packs = r.paket || [];
-    const packFor = (i) => packs.find((p) => p.nomor === i + 1) || packs[i];
-    // Gabungkan soal semua topik → satu pemeriksaan ulang → kembalikan ke topiknya masing-masing
-    const raw = batch.flatMap((_, i) => (packFor(i)?.soal || []).map((s) => ({ ...s, _t: i })));
-    let soal = [];
-    try { soal = (await processSoal(sub, raw, status, AI.settings.verify)).soal; }
-    catch (e) { if (!/tidak menghasilkan soal|gagal lolos/.test(e.message)) throw e; }
-    const now = Date.now();
-    let ready = 0;
-    batch.forEach((tp, i) => {
-      const p = packFor(i);
-      if (!p?.penjelasan) return;
-      const kartu = (p.kartu || []).filter((k) => k.depan && k.belakang).map((k) => ({
-        id: uid(), topikId: tp.id, depan: k.depan, belakang: k.belakang, kutipan: k.kutipan,
-        cek: locateQuote(k.kutipan, d.pages), ef: 2.5, interval: 0, reps: 0, lapses: 0, due: now,
-      })).filter((k) => k.cek.status !== "tidak");
-      d.cards.push(...kartu);
-      tp.paket = {
-        penjelasan: p.penjelasan, createdAt: now,
-        soal: soal.filter((s) => s._t === i).map((s) => { delete s._t; return s; }),
-        poin: (p.poin_kunci || []).map((x) => ({ ...x, cek: locateQuote(x.kutipan, d.pages) })),
-      };
-      ready++;
-    });
+    const ready = applyPacks(d, await prepareTopics(d, batch, status));
     if (!t.paket) throw new Error("AI tidak berhasil menyiapkan topik ini. Coba lagi.");
     state.tAnswers = {};
     await save();

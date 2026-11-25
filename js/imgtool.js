@@ -111,7 +111,7 @@ function startImgJob(files, single) {
   if (!g.modules.length || !g.modules.some((m) => m.files.length)) return toast("Tidak ada gambar (PNG/JPG/WEBP) di folder itu.", "err");
   state.imgJob = {
     phase: "preview", kursus: g.root || "Materi", modules: g.modules, skipped: g.skipped,
-    ocr: true, engine: "lokal", simpan: true, error: null, status: "", built: false, lowConf: 0,
+    ocr: true, engine: "lokal", simpan: true, prep: true, error: null, status: "", built: false, lowConf: 0,
   };
   renderImgTool();
 }
@@ -163,7 +163,8 @@ function renderImgTool() {
       <label class="check"><input type="radio" name="imgEngine" value="lokal" ${J.engine === "lokal" ? "checked" : ""}> <span><b>OCR lokal (Tesseract)</b> — disarankan. Gratis, tanpa kuota, berjalan di perangkat ini. ±2–5 detik per halaman (${total} halaman ≈ ${Math.max(1, Math.round((total * 3) / 60))} menit). Tabel terbaca sebagai teks biasa; gambar aslinya tetap tersimpan.</span></label>
       <label class="check"><input type="radio" name="imgEngine" value="ai" ${J.engine === "ai" ? "checked" : ""}> <span><b>OCR AI (Gemini)</b> — tabel &amp; diagram lebih rapi, tetapi memakai ±${calls} panggilan AI dan kadang ada halaman yang ditolak.</span></label>
       <label class="check" style="margin-bottom:10px"><input type="radio" name="imgEngine" value="none" ${!J.ocr ? "checked" : ""}> <span>Tanpa OCR — hanya PDF gambar (tidak bisa dicari/dipelajari)</span></label>
-      <label class="check" style="margin-bottom:12px"><input type="checkbox" id="imgSimpan" ${J.simpan ? "checked" : ""}> Simpan tiap modul sebagai materi belajar</label>
+      <label class="check" style="margin-bottom:8px"><input type="checkbox" id="imgSimpan" ${J.simpan ? "checked" : ""}> Simpan tiap modul sebagai materi belajar</label>
+      <label class="check" style="margin-bottom:12px"><input type="checkbox" id="imgPrep" ${J.prep ? "checked" : ""}> <span>Setelah selesai, <b>langsung siapkan semua modul</b>: ringkasan, peta materi, penjelasan tiap topik, flashcard, dan soal (memakai kuota AI; bisa dilanjutkan besok jika habis)</span></label>
       <p class="small muted">Modul yang sudah pernah dibaca dengan nama yang sama akan dilewati.</p>
       <div class="row"><button class="btn primary" data-act="imgStart">Mulai</button><button class="btn" data-act="imgReset">Batal</button></div>
     </section>`;
@@ -190,13 +191,22 @@ function renderImgTool() {
     main = `<section class="card">
       <h2>Selesai</h2>
       <p>${total} halaman dari ${J.modules.length} modul${J.ocr ? " sudah dibaca" : ""}.${saved ? ` ${saved} modul tersimpan sebagai materi belajar.` : ""}</p>
+      ${J.simpan && J.modules.some((m) => m.docId) ? (() => {
+        const P = state.prep?.kursus === J.kursus ? state.prep : null;
+        const msg = P?.phase === "running" ? `Sedang menyiapkan semua modul (ringkasan, topik, kartu, soal)…`
+          : P?.phase === "done" ? "Semua modul sudah disiapkan dan siap dipelajari."
+          : P?.phase === "paused" ? `Persiapan modul terhenti: ${P.error}` : "";
+        return `<div class="card" style="margin:10px 0">${msg ? `<p class="small"><b>${esc(msg)}</b></p>` : ""}
+          ${P?.phase === "running" ? `<p id="prepStatus" class="small muted">${esc(P.status)}</p>` : ""}
+          <button class="btn ${P ? "" : "primary"} block" data-act="folder" data-name="${esc(J.kursus)}">Buka folder “${esc(J.kursus)}”</button></div>`;
+      })() : ""}
       ${J.lowConf ? `<p class="small muted">${J.lowConf} halaman terbaca kurang jelas (gambar buram/kecil). Teksnya tetap disimpan; cek lewat "Halaman asli" bila ragu.</p>` : ""}
       <div class="stack-sm">
         <button class="btn primary block" data-act="imgPdf">Unduh PDF “${esc(J.kursus)}.pdf”</button>
         ${J.ocr ? `<button class="btn block" data-act="imgTxt">Unduh teks hasil OCR (.txt)</button>` : ""}
         <button class="btn block" data-act="imgReset">Proses folder lain</button>
       </div>
-      ${J.ocr ? `<p class="small muted" style="margin-top:10px">Cek hasil bacaan tiap modul lewat tombol <b>Buka</b> → "Teks hasil baca file". Ringkasan & peta materi tiap modul dibuat saat kamu membuka tab Belajar bertahap.</p>` : ""}
+      ${J.ocr ? `<p class="small muted" style="margin-top:10px">Cek hasil bacaan tiap modul lewat tombol <b>Buka</b> → "Teks hasil baca file".${J.prep ? "" : ` Untuk menyiapkan ringkasan, topik, kartu, dan soal semua modul sekaligus, buka foldernya lalu klik <b>Siapkan semua</b>.`}</p>` : ""}
     </section>`;
   }
 
@@ -226,6 +236,7 @@ async function runImgJob() {
     J.ocr = eng !== "none";
     if (J.ocr) J.engine = eng;
     J.simpan = J.ocr && document.getElementById("imgSimpan").checked;
+    J.prep = J.simpan && document.getElementById("imgPrep").checked;
   }
   if (!J.ocr) { J.phase = "done"; renderImgTool(); return buildImgPdf(); }
   if (J.engine === "ai" && !AI.settings.key) { openSettings(); return toast("Isi API key dulu untuk OCR AI, atau pilih OCR lokal.", "err"); }
@@ -290,6 +301,8 @@ async function runImgJob() {
     if (J.engine === "lokal") tessStop(); // bebaskan memori mesin OCR
   }
   renderImgTool();
+  // Lanjut otomatis: siapkan ringkasan, topik, kartu, dan soal untuk seluruh folder
+  if (J.phase === "done" && J.prep && J.modules.some((m) => m.docId)) runPrep(J.kursus).then(() => state.view === "images" && renderImgTool());
 }
 
 async function saveModuleDoc(J, m) {
