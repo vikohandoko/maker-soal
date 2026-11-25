@@ -1,6 +1,6 @@
 // Service worker: aplikasi tetap bisa dibuka saat sinyal lemah.
 // Strategi "network-first": selalu ambil versi terbaru, pakai cache jika offline.
-const CACHE = "maker-soal-v15";
+const CACHE = "maker-soal-v16";
 self.addEventListener("install", (e) => self.skipWaiting());
 self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener("fetch", (e) => {

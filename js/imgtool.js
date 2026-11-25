@@ -11,6 +11,80 @@ function loadScript(src) {
   });
 }
 
+// ---------- OCR lokal (Tesseract.js): gratis, tanpa kuota, berjalan di perangkat ini ----------
+const TESS_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/tesseract.min.js";
+let tessP = null;
+function tessInit(onStatus) {
+  tessP ||= (async () => {
+    onStatus?.("Memuat mesin OCR lokal (sekali saja, ±10 MB)…");
+    await loadScript(TESS_URL);
+    const n = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1));
+    const sched = Tesseract.createScheduler();
+    for (let i = 0; i < n; i++) {
+      const w = await Tesseract.createWorker("ind", 1, {
+        logger: (m) => { if (i === 0 && m.status !== "recognizing text") onStatus?.(`Memuat mesin OCR lokal: ${m.status} ${Math.round((m.progress || 0) * 100)}%`); },
+      });
+      sched.addWorker(w);
+    }
+    return sched;
+  })().catch((e) => { tessP = null; throw new Error("Mesin OCR lokal gagal dimuat (cek internet): " + (e.message || e)); });
+  return tessP;
+}
+async function tessStop() {
+  if (!tessP) return;
+  const p = tessP; tessP = null;
+  try { (await p).terminate(); } catch {}
+}
+// Tulisan kecil diperbesar dulu agar lebih akurat
+async function tessImage(file) {
+  const bmp = await createImageBitmap(file);
+  const scale = Math.max(bmp.width, bmp.height) < 1400 ? 2 : 1;
+  if (scale === 1) { bmp.close?.(); return file; }
+  const c = document.createElement("canvas");
+  c.width = bmp.width * scale; c.height = bmp.height * scale;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close?.();
+  return c;
+}
+// Rapikan hasil Tesseract: baris dalam satu paragraf disambung, butir daftar tetap di baris baru, baris sampah dibuang
+function tessClean(t) {
+  const ITEM = /^(\d+[.)]|[a-zA-Z][.)]|\(\w{1,4}\)|[•\-–*▪●○■□►])\s/;
+  // Buang sisa antarmuka aplikasi pembaca di tepi atas/bawah (jam, baterai, "◀ 12/120 ▶")
+  const ui = (l) => { const s = l.trim(); return s.length < 25 && (/\d+\s*(\/|dari|of)\s*\d+|\d{1,2}[:.]\d{2}\b|\d+\s*%/i.test(s) || !/[A-Za-zÀ-ÿ]{3,}/.test(s)); };
+  const raw = t.replace(/\r/g, "").split("\n");
+  const strip = () => { while (raw.length && !raw[0].trim()) raw.shift(); while (raw.length && !raw[raw.length - 1].trim()) raw.pop(); };
+  strip();
+  for (let k = 0; k < 3 && raw.length && ui(raw[0]); k++) { raw.shift(); strip(); }
+  for (let k = 0; k < 3 && raw.length && ui(raw[raw.length - 1]); k++) { raw.pop(); strip(); }
+  t = raw.join("\n");
+  return t.split(/\n\s*\n/).map((p) => {
+    const lines = p.split("\n").map((l) => l.trim()).filter((l) => {
+      const letters = (l.match(/[A-Za-zÀ-ÿ0-9]/g) || []).length;
+      return letters >= 2 && !(l.length < 15 && letters / l.length < 0.5);
+    });
+    let out = "";
+    for (const l of lines) {
+      if (!out) out = l;
+      else if (ITEM.test(l)) out += "\n" + l;
+      else if (/[A-Za-z]-$/.test(out)) out += l; // kata terpotong di akhir baris ("kata-" + "kata")
+      else out += " " + l;
+    }
+    return out;
+  }).filter(Boolean).join("\n\n");
+}
+async function ocrLocal(files, onStatus) {
+  const sched = await tessInit(onStatus);
+  let done = 0;
+  return Promise.all(files.map(async (f) => {
+    const { data } = await sched.addJob("recognize", await tessImage(f));
+    onStatus?.(`OCR lokal: ${++done}/${files.length} halaman dalam kelompok ini`);
+    return { text: tessClean(data.text || "") || "[halaman kosong]", conf: data.confidence ?? 100 };
+  }));
+}
+
 // Kelompokkan file dari "Pilih folder" berdasarkan subfolder → modul
 function groupFolder(files) {
   const imgs = [...files].filter(isImageFile);
@@ -37,7 +111,7 @@ function startImgJob(files, single) {
   if (!g.modules.length || !g.modules.some((m) => m.files.length)) return toast("Tidak ada gambar (PNG/JPG/WEBP) di folder itu.", "err");
   state.imgJob = {
     phase: "preview", kursus: g.root || "Materi", modules: g.modules, skipped: g.skipped,
-    ocr: true, simpan: true, error: null, status: "", built: false,
+    ocr: true, engine: "lokal", simpan: true, error: null, status: "", built: false, lowConf: 0,
   };
   renderImgTool();
 }
@@ -85,9 +159,12 @@ function renderImgTool() {
     main = `<section class="card">
       <label class="field"><span>Nama mata kuliah / judul PDF</span><input type="text" id="imgKursus" value="${esc(J.kursus)}"></label>
       <p class="small">${J.modules.length} modul · ${total} gambar${J.skipped ? ` · ${J.skipped} file bukan gambar diabaikan` : ""}.</p>
-      <label class="check" style="margin-bottom:8px"><input type="checkbox" id="imgOcr" ${J.ocr ? "checked" : ""}> Baca tulisan (OCR) — PDF bisa dicari &amp; bisa dipelajari di aplikasi</label>
+      <p class="small" style="margin:4px 0"><b>Cara membaca tulisan (OCR):</b></p>
+      <label class="check"><input type="radio" name="imgEngine" value="lokal" ${J.engine === "lokal" ? "checked" : ""}> <span><b>OCR lokal (Tesseract)</b> — disarankan. Gratis, tanpa kuota, berjalan di perangkat ini. ±2–5 detik per halaman (${total} halaman ≈ ${Math.max(1, Math.round((total * 3) / 60))} menit). Tabel terbaca sebagai teks biasa; gambar aslinya tetap tersimpan.</span></label>
+      <label class="check"><input type="radio" name="imgEngine" value="ai" ${J.engine === "ai" ? "checked" : ""}> <span><b>OCR AI (Gemini)</b> — tabel &amp; diagram lebih rapi, tetapi memakai ±${calls} panggilan AI dan kadang ada halaman yang ditolak.</span></label>
+      <label class="check" style="margin-bottom:10px"><input type="radio" name="imgEngine" value="none" ${!J.ocr ? "checked" : ""}> <span>Tanpa OCR — hanya PDF gambar (tidak bisa dicari/dipelajari)</span></label>
       <label class="check" style="margin-bottom:12px"><input type="checkbox" id="imgSimpan" ${J.simpan ? "checked" : ""}> Simpan tiap modul sebagai materi belajar</label>
-      <p class="small muted">OCR memakai ±${calls} panggilan AI (8 gambar per panggilan). Modul yang sudah pernah dibaca dengan nama yang sama akan dilewati. Tanpa OCR, PDF dibuat gratis tanpa AI.</p>
+      <p class="small muted">Modul yang sudah pernah dibaca dengan nama yang sama akan dilewati.</p>
       <div class="row"><button class="btn primary" data-act="imgStart">Mulai</button><button class="btn" data-act="imgReset">Batal</button></div>
     </section>`;
   } else if (running || J.phase === "building") {
@@ -113,6 +190,7 @@ function renderImgTool() {
     main = `<section class="card">
       <h2>Selesai</h2>
       <p>${total} halaman dari ${J.modules.length} modul${J.ocr ? " sudah dibaca" : ""}.${saved ? ` ${saved} modul tersimpan sebagai materi belajar.` : ""}</p>
+      ${J.lowConf ? `<p class="small muted">${J.lowConf} halaman terbaca kurang jelas (gambar buram/kecil). Teksnya tetap disimpan; cek lewat "Halaman asli" bila ragu.</p>` : ""}
       <div class="stack-sm">
         <button class="btn primary block" data-act="imgPdf">Unduh PDF “${esc(J.kursus)}.pdf”</button>
         ${J.ocr ? `<button class="btn block" data-act="imgTxt">Unduh teks hasil OCR (.txt)</button>` : ""}
@@ -144,11 +222,13 @@ async function runImgJob() {
   const J = state.imgJob;
   if (J.phase === "preview") {
     J.kursus = document.getElementById("imgKursus").value.trim() || J.kursus;
-    J.ocr = document.getElementById("imgOcr").checked;
+    const eng = document.querySelector('input[name="imgEngine"]:checked')?.value || "lokal";
+    J.ocr = eng !== "none";
+    if (J.ocr) J.engine = eng;
     J.simpan = J.ocr && document.getElementById("imgSimpan").checked;
   }
   if (!J.ocr) { J.phase = "done"; renderImgTool(); return buildImgPdf(); }
-  if (!AI.settings.key) { openSettings(); return toast("Isi API key dulu untuk membaca tulisan (OCR).", "err"); }
+  if (J.engine === "ai" && !AI.settings.key) { openSettings(); return toast("Isi API key dulu untuk OCR AI, atau pilih OCR lokal.", "err"); }
 
   // Lewati modul yang sudah pernah dibaca (nama mata kuliah + modul + jumlah gambar sama)
   const docs = await DB.all();
@@ -178,7 +258,14 @@ async function runImgJob() {
         // Simpan gambar halaman agar bisa dilihat di materi (tabel/diagram tampil utuh)
         if (J.simpan) await saveBlobs(m.docId, imgs.map((g, k) => ({ key: `img|Halaman ${start + k + 1}`, blob: b64ToBlob(g.data) })));
         if (J.stopReq) throw new Error("stop");
-        setImgStatus(`${m.name}: membaca halaman ${start + 1}–${start + batch.length} dari ${m.files.length}…`);
+        setImgStatus(`${m.name}: membaca halaman ${start + 1}–${start + batch.length} dari ${m.files.length}${J.engine === "lokal" ? " (OCR lokal)" : ""}…`);
+        if (J.engine === "lokal") {
+          const res = await ocrLocal(batch, (s) => { const el = document.getElementById("imgSub"); if (el) el.textContent = s; });
+          J.lowConf += res.filter((r) => r.conf < 70).length;
+          m.texts.push(...res.map((r) => r.text));
+          setImgStatus(`${m.name}: ${m.texts.length}/${m.files.length} halaman terbaca`);
+          continue;
+        }
         // Tampilkan detik berjalan + kabar dari AI (pindah model, menunggu batas per menit) agar tidak terlihat macet
         const t0 = Date.now();
         let sub = "";
@@ -200,6 +287,7 @@ async function runImgJob() {
   } finally {
     window.onbeforeunload = null;
     J.stopReq = false;
+    if (J.engine === "lokal") tessStop(); // bebaskan memori mesin OCR
   }
   renderImgTool();
 }

@@ -12,7 +12,7 @@ Aplikasi belajar pribadi: unggah materi (PDF, Word, TXT, atau foto catatan), lal
 6. **Uji pemahaman (metode Feynman)**: jelaskan dengan kata-katamu, lalu AI menilai berdasarkan materi
 7. **Latihan tanpa kuota**: acak ulang soal lama, cocokkan istilah, dan tebak istilah, tanpa memakai AI sama sekali
 8. **Gambar → PDF** (di laptop): pilih folder mata kuliah yang berisi subfolder per modul (misalnya `Hukum Adat/Modul 1/…png`). Aplikasi lalu:
-   - membaca tulisan tiap screenshot dengan OCR (8 gambar per panggilan AI),
+   - membaca tulisan tiap screenshot dengan OCR. Pilihan bawaan adalah **OCR lokal (Tesseract)**: gratis, tanpa kuota, berjalan di perangkatmu (±2–5 detik per halaman), dan sisa tampilan aplikasi pembaca seperti jam, baterai, dan "12/120" dibuang otomatis. Alternatifnya **OCR AI (Gemini)**: tabel lebih rapi, tetapi memakai kuota (8 gambar per panggilan),
    - membuat **satu PDF yang bisa dicari** (Ctrl+F) dengan bookmark per modul,
    - menyimpan tiap modul sebagai materi belajar.
 
@@ -36,7 +36,7 @@ Aplikasi belajar pribadi: unggah materi (PDF, Word, TXT, atau foto catatan), lal
 - **Panggilan digabung.** Saat unggah, ringkasan dan peta materi dibuat dalam 1 panggilan. Setiap topik (penjelasan, kartu, dan soal) juga dibuat dalam 1 panggilan, dan baru dibuat saat topik itu dibuka.
 - **Penghitung pemakaian.** Jumlah permintaan per model hari ini terlihat di halaman utama dan Pengaturan. Kuota Gemini direset sekitar pukul 14.00–15.00 WIB, Groq & OpenRouter sekitar pukul 07.00 WIB.
 - **Mode hemat.** Pemeriksaan ulang soal bisa dimatikan di Pengaturan, menghemat 1 panggilan per set soal (ketelitian sedikit turun).
-- Review flashcard, mengerjakan ulang soal, dan latihan tanpa kuota **tidak memakai AI**.
+- Review flashcard, mengerjakan ulang soal, latihan tanpa kuota, dan **OCR lokal di Gambar → PDF** tidak memakai AI.
 
 ## Bagaimana aplikasi menjaga hasil tetap benar
 
