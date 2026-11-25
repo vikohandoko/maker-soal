@@ -180,8 +180,18 @@ async function prepImage(file, maxSide = 1600, quality = 0.82) {
 
 // OCR satu kelompok gambar (sudah diperkecil) → array teks sesuai urutan gambar
 // Halaman yang terlewat (jawaban AI terpotong/berulang) dibaca ulang otomatis.
+const OCR_FAIL = (why) => `[tidak terbaca oleh AI (${why}) — lihat gambar halaman asli]`;
 async function ocrBatch(imgs, onStatus, retry = true) {
-  const raw = await AI.ocr(imgs.map((g) => ({ mime: "image/jpeg", data: g.data })), onStatus);
+  let raw;
+  try { raw = await AI.ocr(imgs.map((g) => ({ mime: "image/jpeg", data: g.data })), onStatus); }
+  catch (e) {
+    // AI menolak/diam untuk kelompok ini → pecah dua; satu halaman yang tetap ditolak ditandai, proses jalan terus
+    if (!e.blocked) throw e;
+    if (imgs.length === 1) return [OCR_FAIL(e.blocked)];
+    onStatus?.(`AI tidak menjawab kelompok ini (${e.blocked}) — dicoba per bagian…`);
+    const h = Math.ceil(imgs.length / 2);
+    return [...(await ocrBatch(imgs.slice(0, h), onStatus)), ...(await ocrBatch(imgs.slice(h), onStatus))];
+  }
   const got = splitOcr(raw, "", "Halaman");
   const out = imgs.map(() => "");
   got.forEach((g) => {

@@ -142,6 +142,10 @@ ATURAN WAJIB:
           buf = buf.slice(k + 1);
           if (!line.startsWith("data:")) continue;
           let d; try { d = JSON.parse(line.slice(5)); } catch { continue; }
+          if (d.error) { // error di tengah aliran
+            if ([429, 503, 500].includes(d.error.code)) throw quotaErr("minute", 20);
+            throw new Error("Gemini menolak permintaan: " + (d.error.message || d.error.code));
+          }
           if (d.promptFeedback?.blockReason) block = d.promptFeedback.blockReason;
           const c = d.candidates?.[0];
           if (c) {
@@ -180,10 +184,11 @@ ATURAN WAJIB:
       else ({ r, j } = await fetchJson(`${API}/models/${model}:generateContent`, opt, req.vision ? 180000 : 300000));
     } catch (e) { if (e.kind || e.cancel) throw e; throw new Error("Tidak bisa terhubung ke internet / server Google."); }
     if (st && r.ok) {
-      if (!st.text && st.block) throw new Error(`AI tidak memberi jawaban (diblokir: ${st.block}).`);
       let text = st.text;
-      // Jawaban terpotong/berulang: buang halaman terakhir yang belum lengkap (nanti dibaca ulang)
-      if (["LOOP", "STOPPED", "MAX_TOKENS"].includes(st.finish)) {
+      // Jawaban kosong (mis. RECITATION = filter teks terbitan, SAFETY, atau gambar tak terbaca): biar pemanggil memecah kelompok
+      if (!text.trim()) throw Object.assign(new Error(`AI tidak memberi jawaban (${st.block || st.finish || "kosong"}).`), { blocked: st.block || st.finish || "kosong" });
+      // Jawaban terpotong/berulang/dihentikan filter: buang halaman terakhir yang belum lengkap (nanti dibaca ulang)
+      if (st.finish && !["STOP", "FINISH_REASON_UNSPECIFIED"].includes(st.finish)) {
         const marks = [...text.matchAll(/===\s*HALAMAN\s*\d+\s*===/gi)];
         if (req.pages > 1 && marks.length > 1) text = text.slice(0, marks[marks.length - 1].index);
         else text += "\n[sebagian tidak terbaca]";
