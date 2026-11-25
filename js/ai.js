@@ -102,6 +102,70 @@ ATURAN WAJIB:
     } finally { clearTimeout(t); active.delete(ctrl); }
   }
 
+  // Deteksi AI yang terjebak mengulang hal yang sama tanpa akhir (sering terjadi saat OCR tabel).
+  // Mengembalikan teks yang sudah dipotong sebelum bagian berulang, atau null jika tidak ada pengulangan.
+  function cutLoop(t) {
+    const tail = t.slice(-3000);
+    const m = tail.match(/(.{2,100}?)\1{20,}\s*$/s);
+    if (m && m[0].length >= 400) return t.slice(0, t.length - m[0].length + m[1].length); // ≥400 karakter: titik-titik daftar isi tidak ikut terpotong
+    const lines = t.split("\n");
+    const recent = lines.map((x) => x.trim()).filter(Boolean).slice(-40);
+    if (recent.length < 40) return null;
+    const set = new Set(recent);
+    if (set.size > 4) return null;
+    while (lines.length && (!lines[lines.length - 1].trim() || set.has(lines[lines.length - 1].trim()))) lines.pop();
+    return lines.join("\n");
+  }
+
+  // Gemini streaming (untuk OCR): kemajuan terlihat, batas waktu dihitung dari "diam" (bukan total), pengulangan dipotong.
+  async function streamGemini(url, opt, onProgress) {
+    const ctrl = new AbortController();
+    active.add(ctrl);
+    let idle;
+    const arm = (ms) => { clearTimeout(idle); idle = setTimeout(() => ctrl.abort(), ms); };
+    const hard = setTimeout(() => ctrl.abort(), 300000);
+    let r, text = "", finish = "", block = "";
+    arm(90000);
+    try {
+      r = await fetch(url, { ...opt, signal: ctrl.signal });
+      if (!r.ok) return { r, j: await r.json().catch(() => ({})) };
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = "", n = 0;
+      for (;;) {
+        arm(60000);
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let k;
+        while ((k = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, k).trim();
+          buf = buf.slice(k + 1);
+          if (!line.startsWith("data:")) continue;
+          let d; try { d = JSON.parse(line.slice(5)); } catch { continue; }
+          if (d.promptFeedback?.blockReason) block = d.promptFeedback.blockReason;
+          const c = d.candidates?.[0];
+          if (c) {
+            text += (c.content?.parts || []).filter((p) => !p.thought).map((p) => p.text || "").join("");
+            if (c.finishReason) finish = c.finishReason;
+          }
+        }
+        onProgress?.(text.length);
+        if (++n % 3 === 0 && text.length > 1500) {
+          const cut = cutLoop(text);
+          if (cut !== null) { reader.cancel().catch(() => {}); return { r, text: cut, finish: "LOOP" }; }
+        }
+      }
+      return { r, text, finish, block };
+    } catch (e) {
+      if (cancelled) throw Object.assign(new Error("Dihentikan."), { cancel: true });
+      if (ctrl.signal.aborted) {
+        if (text.trim()) return { r, text, finish: "STOPPED" }; // sebagian sudah diterima → pakai yang ada
+        throw quotaErr("slow", 30);
+      }
+      throw e;
+    } finally { clearTimeout(idle); clearTimeout(hard); active.delete(ctrl); }
+  }
+
   // ----- Gemini -----
   async function callGemini(model, req) {
     const body = { contents: req.contents, generationConfig: { temperature: req.temperature } };
@@ -109,12 +173,23 @@ ATURAN WAJIB:
     if (req.schema) { body.generationConfig.responseMimeType = "application/json"; body.generationConfig.responseSchema = req.schema; }
     // OCR tidak butuh "berpikir": matikan agar jauh lebih cepat (hanya model 2.5 Flash/Flash-Lite yang bisa dimatikan)
     if (req.fast && /2\.5-flash/i.test(model)) body.generationConfig.thinkingConfig = { thinkingBudget: 0 };
-    let r, j;
+    const opt = { method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": settings.key }, body: JSON.stringify(body) };
+    let r, j, st = null;
     try {
-      ({ r, j } = await fetchJson(`${API}/models/${model}:generateContent`, {
-        method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": settings.key }, body: JSON.stringify(body),
-      }, req.vision ? 180000 : 300000));
+      if (req.stream) { st = await streamGemini(`${API}/models/${model}:streamGenerateContent?alt=sse`, opt, req.onProgress); r = st.r; j = st.j || {}; }
+      else ({ r, j } = await fetchJson(`${API}/models/${model}:generateContent`, opt, req.vision ? 180000 : 300000));
     } catch (e) { if (e.kind || e.cancel) throw e; throw new Error("Tidak bisa terhubung ke internet / server Google."); }
+    if (st && r.ok) {
+      if (!st.text && st.block) throw new Error(`AI tidak memberi jawaban (diblokir: ${st.block}).`);
+      let text = st.text;
+      // Jawaban terpotong/berulang: buang halaman terakhir yang belum lengkap (nanti dibaca ulang)
+      if (["LOOP", "STOPPED", "MAX_TOKENS"].includes(st.finish)) {
+        const marks = [...text.matchAll(/===\s*HALAMAN\s*\d+\s*===/gi)];
+        if (req.pages > 1 && marks.length > 1) text = text.slice(0, marks[marks.length - 1].index);
+        else text += "\n[sebagian tidak terbaca]";
+      }
+      return { text, truncated: false };
+    }
     if (r.status === 429 || r.status === 503) {
       const det = j.error?.details || [];
       const ids = det.flatMap((d) => (d.violations || []).map((v) => v.quotaId || "")).join(" ");
@@ -181,12 +256,13 @@ ATURAN WAJIB:
     return { text, truncated: ch?.finish_reason === "length" };
   }
 
-  async function call({ tier = "berat", system, contents, schema, temperature = 0.2, onStatus, fast = false }) {
+  async function call({ tier = "berat", system, contents, schema, temperature = 0.2, onStatus, fast = false, stream = false }) {
     if (!settings.key) throw new Error("API key Gemini belum diisi. Buka Pengaturan (ikon roda gigi).");
     cancelled = false;
     const vision = contents.some((c) => c.parts.some((p) => p.inline_data));
     const size = (system || "").length + contents.reduce((n, c) => n + c.parts.reduce((m, p) => m + (p.text || "").length, 0), 0);
-    const req = { system, contents, schema, temperature, fast, vision };
+    const pages = contents.reduce((n, c) => n + c.parts.filter((p) => p.inline_data).length, 0);
+    const req = { system, contents, schema, temperature, fast, vision, stream, pages };
     const models = chain(tier, vision);
     const bad = new Map(); // format JSON rusak per model (percobaan ini saja)
     for (let round = 0; round < 14; round++) {
@@ -208,6 +284,7 @@ ATURAN WAJIB:
       const [pid, ...rest] = key.split(":");
       const model = rest.join(":");
       let res;
+      req.onProgress = onStatus && ((n) => onStatus(`${label(key)} · ${n.toLocaleString("id-ID")} karakter diterima`));
       try { res = pid === "gemini" ? await callGemini(model, req) : await callOpenAI(pid, model, req); }
       catch (e) {
         if (!e.kind) throw e;
@@ -319,7 +396,7 @@ ATURAN WAJIB:
 
     async ocr(files, onStatus) {
       return call({
-        onStatus, temperature: 0, fast: true,
+        onStatus, temperature: 0, fast: true, stream: true,
         contents: [{
           role: "user",
           parts: [

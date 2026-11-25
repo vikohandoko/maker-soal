@@ -179,7 +179,8 @@ async function prepImage(file, maxSide = 1600, quality = 0.82) {
 }
 
 // OCR satu kelompok gambar (sudah diperkecil) → array teks sesuai urutan gambar
-async function ocrBatch(imgs, onStatus) {
+// Halaman yang terlewat (jawaban AI terpotong/berulang) dibaca ulang otomatis.
+async function ocrBatch(imgs, onStatus, retry = true) {
   const raw = await AI.ocr(imgs.map((g) => ({ mime: "image/jpeg", data: g.data })), onStatus);
   const got = splitOcr(raw, "", "Halaman");
   const out = imgs.map(() => "");
@@ -187,6 +188,13 @@ async function ocrBatch(imgs, onStatus) {
     const k = parseInt(g.label.replace(/\D+/g, "")) - 1;
     if (k >= 0 && k < out.length) out[k] = g.text;
   });
+  if (imgs.length === 1 && !out[0].trim() && raw.trim()) out[0] = raw.replace(/===\s*HALAMAN\s*\d+\s*===/gi, "").trim();
+  const miss = out.map((t, i) => (t.trim() ? -1 : i)).filter((i) => i >= 0);
+  if (retry && miss.length && imgs.length > 1) {
+    onStatus?.(`${miss.length} halaman belum terbaca — membaca ulang…`);
+    const again = await ocrBatch(miss.map((i) => imgs[i]), onStatus, miss.length < imgs.length);
+    miss.forEach((i, k) => { out[i] = again[k]; });
+  }
   return out;
 }
 
